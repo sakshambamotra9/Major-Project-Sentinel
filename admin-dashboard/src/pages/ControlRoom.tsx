@@ -200,6 +200,16 @@ export default function ControlRoom() {
                             <div className="ipfs-evidence">
                               <span>IPFS Evidence Captured</span>
                               <img src={`http://127.0.0.1:8080/ipfs/${v.cid}`} alt="Violation Snapshot" />
+                              <div className="cid-link-wrapper">
+                                <a 
+                                  href={`http://127.0.0.1:8080/ipfs/${v.cid}`} 
+                                  target="_blank" 
+                                  rel="noopener noreferrer"
+                                  className="cid-link"
+                                >
+                                  🔗 Open IPFS CID: {v.cid}
+                                </a>
+                              </div>
                             </div>
                           )}
                         </div>

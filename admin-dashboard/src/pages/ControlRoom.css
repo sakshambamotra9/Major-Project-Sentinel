@@ -204,6 +204,24 @@
   border: 1px solid rgba(255,255,255,0.2);
 }
 
+.cid-link-wrapper {
+  margin-top: 8px;
+}
+
+.cid-link {
+  font-size: 11px;
+  color: #c084fc;
+  text-decoration: underline;
+  font-family: monospace;
+  display: inline-block;
+  word-break: break-all;
+  transition: color 0.2s ease;
+}
+
+.cid-link:hover {
+  color: #e9d5ff;
+}
+
 .loading, .empty-state {
   color: var(--text-muted);
   font-style: italic;
