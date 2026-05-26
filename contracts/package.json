@@ -1,0 +1,10 @@
+{
+  "name": "sentinel-exam-contracts",
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "MIT",
+  "devDependencies": {
+    "hardhat": "^2.22.2",
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0"
+  }
+}

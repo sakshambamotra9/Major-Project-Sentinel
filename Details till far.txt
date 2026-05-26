@@ -1,0 +1,184 @@
+Sentinel Exam: AI Proctoring Platform
+======================================
+Project Details, Algorithms, Rules, and Data Values Done So Far
+
+This document contains all the exact configurations, thresholds, and algorithms implemented in the project so far. It is meant to be shared with new team members to replicate the exact same setup and understand the current system rules.
+
+---------------------------------------------------------
+0. PROJECT EXPLANATION & GOALS (WHAT WE ARE DOING)
+---------------------------------------------------------
+What is Sentinel Exam?
+Sentinel Exam is an advanced, highly secure online examination platform. Our main objective is to allow students to take exams remotely from home while absolutely ensuring zero cheating. It addresses two major flaws in traditional online exams:
+1. Cheating Vulnerability: Traditional platforms struggle to catch students using phones, hidden notes, or having another person in the room.
+2. Data Security: Traditional systems store exam data in a centralized server, making it vulnerable to hacks and database tampering.
+
+How we solve these problems:
+1. AI-Powered Anti-Cheating System: The system continuously monitors the student via webcam and microphone using advanced AI. It acts as a strict digital invigilator by:
+   - Tracking Face & Identity: Ensuring the person who started the exam is the one finishing it.
+   - Object & Person Detection: Scanning for unauthorized items (phones, books) or extra people in the room.
+   - Gaze/Eye Tracking: Monitoring if the student is consistently looking away from the screen (e.g., at hidden notes).
+   - Audio Analysis: Detecting multiple voices or suspicious audio in the background.
+
+2. Blockchain & IPFS Security (Decentralization): 
+   - Instead of storing cheating flags in a centralized, editable database, we permanently write them to an immutable Blockchain. This makes the system 100% fair and tamper-proof.
+   - Since video/photo proofs are too large for the blockchain, when a student is caught cheating, the system takes a snapshot and saves it on IPFS (a decentralized, hacker-proof storage network). The blockchain then securely points to this IPFS photo, providing undeniable proof.
+
+---------------------------------------------------------
+1. PROJECT ARCHITECTURE & TECH STACK
+---------------------------------------------------------
+- Frontend: React / Next.js (Website for students to take exams)
+- AI Backend: Python / FastAPI (Receives live webcam video and runs AI models)
+- Smart Contracts: Blockchain / Hardhat / Solidity 0.8.24 (Secure logging of exam proofs)
+- Storage: IPFS (Decentralized storage for cheating snapshots)
+
+---------------------------------------------------------
+2. AI MODELS IN USE
+---------------------------------------------------------
+1. Object Detection: YOLOv8 (Model: yolov8n.pt)
+2. Face & Eye Tracking: MediaPipe Face Mesh (max_num_faces=1 for backend, 5 for test script, refine_landmarks=True)
+3. Identity Verification: DeepFace
+4. Audio Analysis: WebRTCVAD (Voice Activity Detection)
+
+---------------------------------------------------------
+3. ALGORITHMS & EXACT THRESHOLDS
+---------------------------------------------------------
+
+A. Identity Verification (backend/models/identity.py)
+- Library: DeepFace
+- Model: "Facenet"
+- Detector Backend: "opencv"
+- Enforce Detection: False (in case of partial occlusions)
+- Returns: boolean (verified), distance metric, and threshold.
+
+B. Object & Person Detection (backend/models/vision.py & test.py)
+- Classes of Interest (COCO IDs):
+  - 0: Person
+  - 67: Cell Phone
+  - 73: Book
+- Rule: If person_count > 1, trigger "Multiple Persons" flag.
+- Rule: If cell phone or book detected, trigger "Unauthorized Object" flag.
+
+C. Eye & Head Tracking (Gaze Detection)
+Algorithm: Uses Iris Center vs Eye Corners (MediaPipe landmarks) to calculate a ratio from 0.0 to 1.0.
+- Iris Landmarks: 468 (Right), 473 (Left)
+- Eye Width Calculation: Distance between inner and outer eye corners.
+- Horizontal Gaze Ratio: (Iris_x - Left_Corner_x) / Eye_Width
+  - 0.5 = Looking Center
+  - 0.0 = Looking Left
+  - 1.0 = Looking Right
+
+1. FastAPI Backend Thresholds (vision.py):
+   - Horizontal Gaze Deviation: ratio < 0.40 OR ratio > 0.60
+   - Head Turning Deviation: abs(nose_x - eye_center_x) / eye_distance > 0.15
+
+2. Standalone Proctoring Script (test.py):
+   - Smoothing: Uses a Rolling Average Buffer of the last 10 frames to smooth out eye jitter.
+   - Horizontal Left Threshold (H_LEFT): < 0.45
+   - Horizontal Right Threshold (H_RIGHT): > 0.57
+   - Vertical Down Threshold (V_DOWN): > 0.65 (indicates looking down at keyboard/phone)
+
+D. Audio Analysis (backend/models/audio.py)
+- Library: webrtcvad
+- Mode: 3 (Aggressive - catches speech very strictly)
+- Format: 16-bit mono PCM audio
+- Sample Rate: 16000 Hz
+- Chunk Sizes allowed: 10ms, 20ms, or 30ms
+
+---------------------------------------------------------
+4. RULE TIMERS & DELAYS (from test.py)
+---------------------------------------------------------
+To avoid false positives from natural movements, the system requires an event to persist for a specific duration before triggering a snapshot or warning.
+
+- LOOK_AWAY_THRESHOLD: 2.0 seconds
+- NO_FACE_THRESHOLD: 1.0 seconds
+- HEAD_TURN_THRESHOLD: 0.5 seconds
+- MULTIPLE_PEOPLE_THRESHOLD: 1.0 seconds
+- Snapshot Cooldown: 3 seconds (minimum time between two snapshots)
+
+---------------------------------------------------------
+5. PENALTIES & TERMINATION LOGIC
+---------------------------------------------------------
+
+1. Real-time Test Script Rules:
+   - MAX_WARNINGS: 5
+   - If warnings reach 5 -> Exam Terminated ("EXAM TERMINATED - MALPRACTICE")
+   - If Cell Phone Detected -> Immediate Termination ("EXAM TERMINATED - PHONE DETECTED")
+
+2. FastAPI Backend Risk Score System (main.py):
+   - Multiple persons detected: +50 risk points
+   - Unauthorized objects (Phone/Book): +40 risk points
+   - Gaze deviation detected: +20 risk points
+   - No face detected (Camera blocked): +50 risk points
+
+---------------------------------------------------------
+6. IPFS UPLOAD CONFIGURATION
+---------------------------------------------------------
+- API Endpoint: http://127.0.0.1:5001/api/v0/add (Local IPFS node)
+- Protocol: Sends snapshot images via POST request.
+- MFS Pinning: Copies file to Mutable File System (MFS) via `/api/v0/files/cp` so it appears in the IPFS Desktop "Files" tab.
+- Output: Returns a CID (Content Identifier) pointing to the snapshot for blockchain storage.
+
+---------------------------------------------------------
+7. DIRECTORY STRUCTURE & KEY FILES
+---------------------------------------------------------
+c:\8th SEM\Major project\
+ ├── frontend/               # React/Next.js application
+ │    └── src/App.tsx        # Main frontend UI and webcam streaming logic
+ ├── backend/                # Python FastAPI server
+ │    ├── main.py            # API Routes & Risk Scoring logic
+ │    ├── requirements.txt   # Backend dependencies
+ │    ├── yolov8n.pt         # Local YOLOv8 weights file
+ │    └── models/
+ │         ├── vision.py     # YOLO Object detection & MediaPipe Gaze logic
+ │         ├── audio.py      # WebRTCVAD audio analysis
+ │         └── identity.py   # DeepFace Identity Verification
+ ├── contracts/              # Blockchain Smart Contracts
+ │    ├── hardhat.config.js  # Solidity 0.8.24 configuration
+ │    └── package.json       # Contract dependencies
+ └── test.py                 # Standalone local proctoring test script
+
+---------------------------------------------------------
+8. SETUP & EXECUTION COMMANDS
+---------------------------------------------------------
+For the new team member, here is how to run the different parts of the project:
+
+1. Running the Local Test Script (Real-time camera test):
+   > python test.py
+
+2. Starting the Backend Server (FastAPI):
+   > cd backend
+   > pip install -r requirements.txt
+   > uvicorn main:app --reload
+
+3. Starting the Frontend (React):
+   > cd frontend
+   > npm install
+   > npm start (or npm run dev)
+
+4. IPFS Daemon (Required for IPFS uploads):
+   > ipfs daemon (Must be running in the background to expose port 5001)
+
+---------------------------------------------------------
+9. CORE CODE REFERENCE (GAZE TRACKING ALGORITHM)
+---------------------------------------------------------
+If you need to replicate the exact math used for the eye tracking, here are the core Python functions used to calculate the gaze ratios:
+
+def calculate_horizontal_gaze(iris_center, eye_left, eye_right):
+    """Iris x position as a fraction of eye width. 0=full left, 1=full right."""
+    eye_width = eye_right.x - eye_left.x
+    if eye_width == 0:
+        return 0.5
+    return (iris_center.x - eye_left.x) / eye_width
+
+def calculate_vertical_gaze(iris_center, eye_top, eye_bottom):
+    """Iris y position as a fraction of eye height. 0=full up, 1=full down."""
+    eye_height = eye_bottom.y - eye_top.y
+    if eye_height == 0:
+        return 0.5
+    return (iris_center.y - eye_top.y) / eye_height
+
+# Smoothing logic (used in test.py to prevent jitter):
+h_ratio_buf = deque(maxlen=10) # Rolling average over 10 frames
+v_ratio_buf = deque(maxlen=10)
+smooth_h = sum(h_ratio_buf) / len(h_ratio_buf)
+smooth_v = sum(v_ratio_buf) / len(v_ratio_buf)

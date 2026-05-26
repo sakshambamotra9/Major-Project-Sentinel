@@ -1,0 +1,37 @@
+Sentinel Exam: A Simple Guide
+=============================
+
+What is the Sentinel Exam Project?
+----------------------------------
+Sentinel Exam is an advanced online examination platform. Its main goal is to let students take exams from home while making absolutely sure that nobody cheats, and that the exam results are completely secure and trustworthy.
+
+Why is this needed?
+-------------------
+Traditional online exams have two big problems:
+1. It's easy for students to cheat (using phones, hidden notes, or having someone else in the room).
+2. The data is usually stored in one central server. If that server is hacked, the exam data can be changed, lost, or stolen.
+
+How does it stop cheating? (The "AI" Part)
+------------------------------------------
+The system watches the student through their webcam and microphone using Artificial Intelligence (AI). It acts like a very strict digital teacher watching you:
+
+- Face Recognition: It continuously checks your face to make sure the person who started the exam is the same person finishing it.
+- Object Detection: It scans the video feed to see if you pull out a mobile phone, a book, or if a second person walks into the camera frame.
+- Eye/Gaze Tracking: It watches your eyes. If you keep looking away from the screen (like looking down at notes on your lap), it will notice.
+- Audio Analysis: It listens through the microphone. If it hears multiple voices talking, it will flag it as suspicious.
+
+Whenever the AI notices something wrong, it creates a "risk score" and flags the behavior.
+
+How is it secure? (The "Decentralized/Blockchain" Part)
+-------------------------------------------------------
+Normally, a flag for cheating is just saved in a database that a school admin could theoretically edit or delete. Our system uses Blockchain to prevent this. 
+
+- Blockchain: Think of blockchain as a digital logbook that is impossible to erase or edit. Every time a student is caught doing something suspicious, a record is permanently written to the blockchain. This proves that the system is 100% fair and tamper-proof.
+- IPFS: If the system catches a student cheating, it takes a video/photo snapshot. Since video files are too big for a blockchain, they are saved on IPFS (a decentralized, hacker-proof internet hard drive). The blockchain points to that exact photo, proving without a doubt what happened.
+
+How is it built? (The Architecture)
+-----------------------------------
+The project is split into three main pieces that talk to each other:
+1. The Frontend (Website): Built with React/Next.js. This is the website the student logs into to take their exam.
+2. The AI Backend (Python): The "brain" that receives the live webcam video from the website and runs all the cheating-detection algorithms.
+3. The Smart Contracts (Blockchain): The secure code that writes the final exam logs and cheating proofs to the blockchain. 

@@ -1,0 +1,35 @@
+# Virtual Environments (Python)
+.venv/
+venv/
+env/
+ENV/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Node.js
+node_modules/
+dist/
+.npm
+*.log
+
+# Environment variables / Secrets
+.env
+.env.local
+.env.production
+.env.development
+.env.staging
+
+# OS and IDE files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Large ML Weights (Optional, can be re-downloaded)
+# yolov8n.pt
+# yolov8n.onnx
+# yolo11n.pt
+# yolo11n.onnx
