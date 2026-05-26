@@ -199,10 +199,10 @@ export default function ControlRoom() {
                           {v.cid && (
                             <div className="ipfs-evidence">
                               <span>IPFS Evidence Captured</span>
-                              <img src={`http://127.0.0.1:8080/ipfs/${v.cid}`} alt="Violation Snapshot" />
+                              <img src={`https://gateway.pinata.cloud/ipfs/${v.cid}`} alt="Violation Snapshot" />
                               <div className="cid-link-wrapper">
                                 <a 
-                                  href={`http://127.0.0.1:8080/ipfs/${v.cid}`} 
+                                  href={`https://gateway.pinata.cloud/ipfs/${v.cid}`} 
                                   target="_blank" 
                                   rel="noopener noreferrer"
                                   className="cid-link"

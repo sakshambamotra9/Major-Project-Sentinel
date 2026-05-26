@@ -92,26 +92,63 @@ class WifiConnectPayload(BaseModel):
     ssid: str
 
 def upload_to_ipfs(filepath):
-    """Uploads a file to a local IPFS node and makes it visible in IPFS Desktop."""
+    """Uploads a file to Pinata IPFS (if credentials are set) or falls back to local IPFS node."""
+    pinata_jwt = os.getenv("PINATA_JWT")
+    pinata_key = os.getenv("PINATA_API_KEY")
+    pinata_secret = os.getenv("PINATA_API_SECRET")
+
+    filename = os.path.basename(filepath)
+
+    # 1. Try Pinata first if credentials are set
+    if pinata_jwt or (pinata_key and pinata_secret):
+        print(f"Uploading {filename} to Pinata IPFS...")
+        try:
+            url = "https://api.pinata.cloud/pinning/pinFileToIPFS"
+            headers = {}
+            if pinata_jwt:
+                headers["Authorization"] = f"Bearer {pinata_jwt.strip()}"
+            else:
+                headers["pinata_api_key"] = pinata_key.strip()
+                headers["pinata_secret_api_key"] = pinata_secret.strip()
+
+            with open(filepath, 'rb') as f:
+                files = {
+                    'file': (filename, f, 'image/jpeg')
+                }
+                response = requests.post(url, files=files, headers=headers, timeout=15)
+            
+            if response.status_code == 200:
+                cid = response.json().get('IpfsHash')
+                print(f"Successfully uploaded to Pinata IPFS! CID: {cid}")
+                return cid
+            else:
+                print(f"Pinata API error: {response.status_code} - {response.text}")
+        except Exception as e:
+            print(f"Pinata upload failed: {e}")
+            print("Falling back to local IPFS...")
+
+    # 2. Fallback: Local IPFS Daemon
     try:
+        print(f"Uploading {filename} to local IPFS daemon...")
         with open(filepath, 'rb') as f:
             # Assumes local IPFS daemon is running on default port 5001
             response = requests.post('http://127.0.0.1:5001/api/v0/add', files={'file': f}, timeout=5)
         if response.status_code == 200:
             cid = response.json().get('Hash')
-            # Copy to MFS (Mutable File System) to make it visible in IPFS Desktop "Files" tab
+            # Copy to MFS to make it visible in IPFS Desktop
             try:
                 import urllib.parse
-                mfs_path = f"/{os.path.basename(filepath)}"
+                mfs_path = f"/{filename}"
                 cp_url = f"http://127.0.0.1:5001/api/v0/files/cp?arg=/ipfs/{cid}&arg={urllib.parse.quote(mfs_path)}"
                 requests.post(cp_url, timeout=3)
             except Exception as e:
-                print(f"Uploaded to IPFS but could not pin to MFS UI: {e}")
+                print(f"Uploaded to local IPFS but could not pin to MFS UI: {e}")
             return cid
         else:
-            print(f"IPFS API error: {response.status_code} - {response.text}")
+            print(f"Local IPFS API error: {response.status_code} - {response.text}")
     except Exception as e:
-        print(f"IPFS upload failed: {e}. Ensure IPFS Daemon is running locally.")
+        print(f"Local IPFS upload failed: {e}. Ensure IPFS Daemon is running locally if Pinata is not configured.")
+    
     return None
 
 # Root endpoint is handled at the bottom by the React static file server
