@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import './App.css';
-import { initStudentSession, pushViolation, markSessionTerminated, markSessionCompleted, fetchPublishedExams } from './supabase';
+import { supabase, initStudentSession, pushViolation, markSessionTerminated, markSessionCompleted, fetchPublishedExams } from './supabase';
 
 type AppState = 'LOGIN' | 'HOME' | 'SETUP' | 'PRE_TEST' | 'EXAM' | 'TERMINATED' | 'SUBMITTED';
 
@@ -114,6 +114,38 @@ function App() {
       return () => clearInterval(timer);
     }
   }, [appState]);
+
+  // Realtime Session Force-Termination check from Admin
+  useEffect(() => {
+    if (appState !== 'EXAM' || !studentId) return;
+
+    console.log("Subscribing to realtime session updates for force-terminate monitoring...");
+    const channel = supabase
+      .channel(`session-terminate-${studentId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'sessions',
+          filter: `student_id=eq.${studentId}`
+        },
+        (payload) => {
+          console.log("Realtime session update payload:", payload);
+          if (payload.new && payload.new.status === 'terminated') {
+            const reason = payload.new.termination_reason || 'Terminated by Admin';
+            setAppState('TERMINATED');
+            stopExam();
+            alert(`This exam has been FORCE TERMINATED by the Administrator.\nReason: ${reason}`);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [appState, studentId]);
 
   // Window Focus (Switching tab/application) detection
   useEffect(() => {

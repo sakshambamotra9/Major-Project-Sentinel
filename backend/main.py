@@ -528,6 +528,33 @@ def open_browser(payload: BrowserPayload):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+@app.delete("/api/v1/ipfs/unpin/{cid}")
+def unpin_ipfs_file(cid: str):
+    """Unpins a file from Pinata IPFS to manage storage space."""
+    pinata_jwt = os.getenv("PINATA_JWT")
+    pinata_key = os.getenv("PINATA_API_KEY")
+    pinata_secret = os.getenv("PINATA_API_SECRET")
+
+    if not (pinata_jwt or (pinata_key and pinata_secret)):
+        return {"success": False, "error": "Pinata credentials not configured on backend."}
+
+    try:
+        url = f"https://api.pinata.cloud/pinning/unpin/{cid}"
+        headers = {}
+        if pinata_jwt:
+            headers["Authorization"] = f"Bearer {pinata_jwt.strip()}"
+        else:
+            headers["pinata_api_key"] = pinata_key.strip()
+            headers["pinata_secret_api_key"] = pinata_secret.strip()
+
+        response = requests.delete(url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            return {"success": True}
+        else:
+            return {"success": False, "error": f"Pinata returned {response.status_code}: {response.text}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
 # Mount React Frontend
 frontend_dist = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist")
 if os.path.exists(frontend_dist):

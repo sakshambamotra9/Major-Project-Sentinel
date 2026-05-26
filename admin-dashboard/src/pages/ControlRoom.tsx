@@ -69,8 +69,46 @@ export default function ControlRoom() {
     };
   }, [selectedSession]);
 
+  const unpinCids = async (cids: string[]) => {
+    for (const cid of cids) {
+      if (!cid) continue;
+      try {
+        await fetch(`http://127.0.0.1:8000/api/v1/ipfs/unpin/${cid}`, {
+          method: 'DELETE'
+        });
+        console.log(`Unpinned CID from Pinata: ${cid}`);
+      } catch (e) {
+        console.warn(`Failed to unpin CID ${cid}:`, e);
+      }
+    }
+  };
+
+  const forceTerminateSession = async (studentId: string) => {
+    if (window.confirm("Are you sure you want to FORCE TERMINATE this student's live exam?")) {
+      const { error } = await supabase
+        .from('sessions')
+        .update({ 
+          status: 'terminated', 
+          termination_reason: 'Terminated by Admin' 
+        })
+        .eq('student_id', studentId);
+      if (error) {
+        alert("Failed to force terminate session: " + error.message);
+      } else {
+        alert("Session force terminated successfully. The student will be locked out immediately.");
+      }
+    }
+  };
+
   const deleteSession = async (studentId: string) => {
-    if (window.confirm("Are you sure you want to delete this session?")) {
+    if (window.confirm("Are you sure you want to delete this session? This will also delete its violation images from Pinata IPFS.")) {
+      const session = sessions.find(s => s.student_id === studentId);
+      const cids = session?.violations?.map(v => v.cid).filter((cid): cid is string => !!cid) || [];
+
+      if (cids.length > 0) {
+        await unpinCids(cids);
+      }
+
       const { error } = await supabase
         .from('sessions')
         .delete()
@@ -84,7 +122,18 @@ export default function ControlRoom() {
   };
 
   const clearAllSessions = async () => {
-    if (window.confirm("Are you sure you want to clear ALL past exam sessions? This action is irreversible.")) {
+    if (window.confirm("Are you sure you want to clear ALL past exam sessions? This will also delete all their violation images from Pinata IPFS. This action is irreversible.")) {
+      const allCids: string[] = [];
+      sessions.forEach(s => {
+        s.violations?.forEach(v => {
+          if (v.cid) allCids.push(v.cid);
+        });
+      });
+
+      if (allCids.length > 0) {
+        await unpinCids(allCids);
+      }
+
       const { error } = await supabase
         .from('sessions')
         .delete()
@@ -173,7 +222,15 @@ export default function ControlRoom() {
               <div className="glass-header detail-header" style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
                 <h2>Session Details</h2>
                 <div style={{ marginLeft: 'auto', display: 'flex', gap: '10px' }}>
-                  <button className="danger">Force Terminate</button>
+                  {selectedSession.status === 'active' && (
+                    <button 
+                      className="danger" 
+                      onClick={() => forceTerminateSession(selectedSession.student_id)}
+                      style={{ padding: '6px 12px', background: '#dc2626', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}
+                    >
+                      🛑 Force Terminate
+                    </button>
+                  )}
                   <button 
                     onClick={() => deleteSession(selectedSession.student_id)}
                     style={{ padding: '6px 12px', background: '#4b5563', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}

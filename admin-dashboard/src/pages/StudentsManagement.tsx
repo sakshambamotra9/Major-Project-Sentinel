@@ -86,10 +86,39 @@ export default function StudentsManagement() {
   };
 
   const handleDeleteStudent = async (studentIdToDelete: string) => {
-    if (window.confirm(`Are you sure you want to delete student ${studentIdToDelete}? This will delete their verified photo and all their exam session records.`)) {
+    if (window.confirm(`Are you sure you want to delete student ${studentIdToDelete}? This will delete their verified photo, all their exam session records, and all violation images from Pinata IPFS.`)) {
       setIsLoadingList(true);
       try {
-        // 1. Delete associated sessions to satisfy FK constraints
+        // 1. Fetch any sessions for this student first to retrieve all violation CIDs
+        const { data: sessionData } = await supabase
+          .from('sessions')
+          .select('violations')
+          .eq('student_id', studentIdToDelete);
+
+        const cids: string[] = [];
+        if (sessionData) {
+          sessionData.forEach(s => {
+            s.violations?.forEach((v: any) => {
+              if (v.cid) cids.push(v.cid);
+            });
+          });
+        }
+
+        // 2. Unpin gathered CIDs from Pinata IPFS
+        if (cids.length > 0) {
+          for (const cid of cids) {
+            try {
+              await fetch(`http://127.0.0.1:8000/api/v1/ipfs/unpin/${cid}`, {
+                method: 'DELETE'
+              });
+              console.log(`Unpinned CID from Pinata: ${cid}`);
+            } catch (e) {
+              console.warn(`Failed to unpin CID ${cid}:`, e);
+            }
+          }
+        }
+
+        // 3. Delete associated sessions to satisfy FK constraints
         const { error: sessionError } = await supabase
           .from('sessions')
           .delete()
@@ -99,7 +128,7 @@ export default function StudentsManagement() {
           console.warn("Could not delete associated sessions:", sessionError.message);
         }
 
-        // 2. Delete reference photo from storage
+        // 4. Delete reference photo from storage
         const { data: storageData, error: storageError } = await supabase.storage
           .from('student-photos')
           .remove([`${studentIdToDelete}.jpg`]);
@@ -112,7 +141,7 @@ export default function StudentsManagement() {
           alert(`Warning: No files were deleted from Supabase Storage. This usually means the file was not found, or your Row-Level Security (RLS) policies are silently blocking the "DELETE" action for public/anon users.\n\nPlease check your Supabase Storage policies. Deleting database records will proceed.`);
         }
 
-        // 3. Delete student row from database
+        // 5. Delete student row from database
         const { error: dbError } = await supabase
           .from('students')
           .delete()
