@@ -1,19 +1,21 @@
 import React, { useState } from 'react';
-import { Shield, KeyRound, Mail, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { Shield, CheckCircle2, AlertTriangle, UserPlus } from 'lucide-react';
+import { supabase } from '../supabase';
 import './ExamManagement.css'; // Leverage existing dashboard styles
 
 export default function Settings() {
   const [newUsername, setNewUsername] = useState('');
   const [newPassword, setNewPassword] = useState('');
-  const [otp, setOtp] = useState('');
-  const [otpSent, setOtpSent] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const handleSendOtp = async (e: React.FormEvent) => {
+  const handleRegisterAdmin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newUsername.trim() || !newPassword.trim()) {
+    const username = newUsername.trim();
+    const password = newPassword.trim();
+
+    if (!username || !password) {
       setErrorMsg("Please enter both a username and password.");
       return;
     }
@@ -22,62 +24,19 @@ export default function Settings() {
     setSuccessMsg(null);
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/v1/admin/send_otp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username: newUsername.trim(),
-          password: newPassword.trim(),
-        }),
-      });
+      // Direct insertion to Supabase 'admins' table
+      const { error } = await supabase
+        .from('admins')
+        .upsert({ username, password }, { onConflict: 'username' });
 
-      const data = await response.json();
-      if (response.ok) {
-        setOtpSent(true);
-        setSuccessMsg(data.message || "Verification code successfully sent to registered email!");
-      } else {
-        setErrorMsg(data.detail || "Failed to send verification code. Please try again.");
-      }
-    } catch (err) {
-      setErrorMsg("Failed to communicate with authentication server.");
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
+      if (error) throw error;
 
-  const handleVerifyAndRegister = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!otp.trim()) {
-      setErrorMsg("Please enter the 6-digit verification code.");
-      return;
-    }
-    setIsSubmitting(true);
-    setErrorMsg(null);
-    setSuccessMsg(null);
-
-    try {
-      const response = await fetch('http://127.0.0.1:8000/api/v1/admin/verify_otp_and_register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username: newUsername.trim(),
-          password: newPassword.trim(),
-          otp: otp.trim(),
-        }),
-      });
-
-      const data = await response.json();
-      if (response.ok) {
-        setSuccessMsg(data.message || "Administrator registered successfully!");
-        setNewUsername('');
-        setNewPassword('');
-        setOtp('');
-        setOtpSent(false);
-      } else {
-        setErrorMsg(data.detail || "Invalid code or registration failed.");
-      }
-    } catch (err) {
-      setErrorMsg("Failed to complete registration process.");
+      setSuccessMsg(`Administrator '${username}' successfully registered!`);
+      setNewUsername('');
+      setNewPassword('');
+    } catch (err: any) {
+      console.error("Supabase admin registration error:", err);
+      setErrorMsg(err.message || "Failed to register administrator in Supabase.");
     } finally {
       setIsSubmitting(false);
     }
@@ -99,7 +58,7 @@ export default function Settings() {
         </div>
 
         <p style={{ color: 'var(--text-muted)', fontSize: '14px', lineHeight: '1.6', marginBottom: '20px' }}>
-          To add a new administrator, fill in the credentials below. For security, a 6-digit verification code will be sent to the primary email (<strong>2022a6r040@mietjammu.in</strong>) before the user can be registered.
+          To add a new administrator, fill in the credentials below. The new credentials will be saved directly to the database.
         </p>
 
         {successMsg && (
@@ -116,86 +75,43 @@ export default function Settings() {
           </div>
         )}
 
-        {!otpSent ? (
-          <form onSubmit={handleSendOtp} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            <div className="form-group">
-              <label>Admin Username</label>
-              <input
-                type="text"
-                value={newUsername}
-                onChange={e => setNewUsername(e.target.value)}
-                placeholder="Enter new admin username"
-                required
-                disabled={isSubmitting}
-                style={{ width: '100%', boxSizing: 'border-box' }}
-              />
-            </div>
-
-            <div className="form-group">
-              <label>Password / Passcode</label>
-              <input
-                type="password"
-                value={newPassword}
-                onChange={e => setNewPassword(e.target.value)}
-                placeholder="Enter admin password"
-                required
-                disabled={isSubmitting}
-                style={{ width: '100%', boxSizing: 'border-box' }}
-              />
-            </div>
-
-            <button
-              type="submit"
+        <form onSubmit={handleRegisterAdmin} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div className="form-group">
+            <label>Admin Username</label>
+            <input
+              type="text"
+              value={newUsername}
+              onChange={e => setNewUsername(e.target.value)}
+              placeholder="Enter new admin username"
+              required
               disabled={isSubmitting}
-              className="action-btn primary"
-              style={{ padding: '12px 20px', fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginTop: '10px' }}
-            >
-              <Mail size={18} />
-              {isSubmitting ? "Generating OTP..." : "Send Verification Code"}
-            </button>
-          </form>
-        ) : (
-          <form onSubmit={handleVerifyAndRegister} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-            <div style={{ backgroundColor: 'rgba(59, 130, 246, 0.1)', border: '1px solid rgba(59, 130, 246, 0.2)', padding: '12px', borderRadius: '8px', fontSize: '14px', color: '#93c5fd', marginBottom: '10px' }}>
-              Username: <strong>{newUsername}</strong>
-            </div>
+              style={{ width: '100%', boxSizing: 'border-box' }}
+            />
+          </div>
 
-            <div className="form-group">
-              <label>Enter 6-Digit OTP</label>
-              <input
-                type="text"
-                value={otp}
-                onChange={e => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                placeholder="Enter OTP code"
-                required
-                disabled={isSubmitting}
-                style={{ width: '100%', boxSizing: 'border-box', letterSpacing: '8px', fontSize: '20px', textAlign: 'center', fontWeight: 'bold' }}
-              />
-            </div>
+          <div className="form-group">
+            <label>Password / Passcode</label>
+            <input
+              type="password"
+              value={newPassword}
+              onChange={e => setNewPassword(e.target.value)}
+              placeholder="Enter admin password"
+              required
+              disabled={isSubmitting}
+              style={{ width: '100%', boxSizing: 'border-box' }}
+            />
+          </div>
 
-            <div style={{ display: 'flex', gap: '12px', marginTop: '10px' }}>
-              <button
-                type="submit"
-                disabled={isSubmitting}
-                className="action-btn primary"
-                style={{ flex: 1, padding: '12px 20px', fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
-              >
-                <KeyRound size={18} />
-                {isSubmitting ? "Verifying..." : "Register Administrator"}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setOtpSent(false)}
-                disabled={isSubmitting}
-                className="action-btn secondary"
-                style={{ padding: '12px 20px' }}
-              >
-                Cancel
-              </button>
-            </div>
-          </form>
-        )}
+          <button
+            type="submit"
+            disabled={isSubmitting}
+            className="action-btn primary"
+            style={{ padding: '12px 20px', fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', marginTop: '10px' }}
+          >
+            <UserPlus size={18} />
+            {isSubmitting ? "Registering..." : "Register Administrator"}
+          </button>
+        </form>
       </div>
     </div>
   );
