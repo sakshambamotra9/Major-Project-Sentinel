@@ -2,6 +2,20 @@ import { useState, useEffect } from 'react';
 import { supabase } from '../supabase';
 import './ControlRoom.css';
 
+const getCleanCid = (cid: string | null): string => {
+  if (!cid) return "";
+  const trimmed = cid.trim();
+  if (trimmed.includes('/ipfs/')) {
+    const parts = trimmed.split('/ipfs/');
+    return parts[parts.length - 1].split('?')[0];
+  }
+  if (trimmed.includes('pinata.cloud/')) {
+    const parts = trimmed.split('/');
+    return parts[parts.length - 1].split('?')[0];
+  }
+  return trimmed;
+};
+
 interface Session {
   id: string;
   student_id: string;
@@ -72,13 +86,14 @@ export default function ControlRoom() {
   const unpinCids = async (cids: string[]) => {
     for (const cid of cids) {
       if (!cid) continue;
+      const cleanCid = getCleanCid(cid);
       try {
-        await fetch(`http://127.0.0.1:8000/api/v1/ipfs/unpin/${cid}`, {
+        await fetch(`http://127.0.0.1:8000/api/v1/ipfs/unpin/${cleanCid}`, {
           method: 'DELETE'
         });
-        console.log(`Unpinned CID from Pinata: ${cid}`);
+        console.log(`Unpinned CID: ${cleanCid}`);
       } catch (e) {
-        console.warn(`Failed to unpin CID ${cid}:`, e);
+        console.warn(`Failed to unpin CID ${cleanCid}:`, e);
       }
     }
   };
@@ -256,16 +271,38 @@ export default function ControlRoom() {
                           {v.cid && (
                             <div className="ipfs-evidence">
                               <span>IPFS Evidence Captured</span>
-                              <img src={`https://gateway.pinata.cloud/ipfs/${v.cid}`} alt="Violation Snapshot" />
-                              <div className="cid-link-wrapper">
-                                <a 
-                                  href={`https://gateway.pinata.cloud/ipfs/${v.cid}`} 
-                                  target="_blank" 
-                                  rel="noopener noreferrer"
-                                  className="cid-link"
-                                >
-                                  🔗 Open IPFS CID: {v.cid}
-                                </a>
+                              <img 
+                                src={`http://127.0.0.1:8080/ipfs/${getCleanCid(v.cid)}`} 
+                                onError={(e) => {
+                                  const target = e.target as HTMLImageElement;
+                                  if (target.src.startsWith('http://127.0.0.1:8080')) {
+                                    target.src = `https://ipfs.io/ipfs/${getCleanCid(v.cid)}`;
+                                  }
+                                }}
+                                alt="Violation Snapshot" 
+                              />
+                              <div className="cid-link-wrapper" style={{ display: 'flex', flexDirection: 'column', gap: '5px', marginTop: '8px' }}>
+                                <span style={{ fontSize: '11px', color: 'var(--text-muted)', wordBreak: 'break-all' }}>CID: <code>{getCleanCid(v.cid)}</code></span>
+                                <div style={{ display: 'flex', gap: '10px' }}>
+                                  <a 
+                                    href={`http://127.0.0.1:8080/ipfs/${getCleanCid(v.cid)}`} 
+                                    target="_blank" 
+                                    rel="noopener noreferrer"
+                                    className="cid-link"
+                                    style={{ fontSize: '12px' }}
+                                  >
+                                    🔗 Local Gateway
+                                  </a>
+                                  <a 
+                                    href={`https://ipfs.io/ipfs/${getCleanCid(v.cid)}`} 
+                                    target="_blank" 
+                                    rel="noopener noreferrer"
+                                    className="cid-link"
+                                    style={{ fontSize: '12px' }}
+                                  >
+                                    🌐 Public Gateway
+                                  </a>
+                                </div>
                               </div>
                             </div>
                           )}

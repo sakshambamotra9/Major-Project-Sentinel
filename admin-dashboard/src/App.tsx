@@ -5,6 +5,7 @@ import ControlRoom from './pages/ControlRoom';
 import ExamManagement from './pages/ExamManagement';
 import StudentsManagement from './pages/StudentsManagement';
 import Login from './pages/Login';
+import Settings from './pages/Settings';
 
 function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(
@@ -44,6 +45,10 @@ function App() {
             <Route 
               path="/students" 
               element={isAuthenticated ? <StudentsManagement /> : <Navigate to="/login" replace />} 
+            />
+            <Route 
+              path="/settings" 
+              element={isAuthenticated ? <Settings /> : <Navigate to="/login" replace />} 
             />
             <Route 
               path="*" 

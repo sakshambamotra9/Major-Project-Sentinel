@@ -9,6 +9,9 @@ import base64
 import time
 import subprocess
 import threading
+import random
+import smtplib
+from email.mime.text import MIMEText
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
@@ -92,14 +95,40 @@ class WifiConnectPayload(BaseModel):
     ssid: str
 
 def upload_to_ipfs(filepath):
-    """Uploads a file to Pinata IPFS (if credentials are set) or falls back to local IPFS node."""
+    """Uploads a file to a local IPFS node (preferring local daemon for decentralization) with Pinata fallback."""
+    filename = os.path.basename(filepath)
+
+    # 1. Try local IPFS node first (decentralized)
+    try:
+        print(f"Uploading {filename} to local IPFS node...")
+        with open(filepath, 'rb') as f:
+            # Assumes local IPFS daemon is running on default port 5001
+            response = requests.post('http://127.0.0.1:5001/api/v0/add', files={'file': f}, timeout=5)
+        if response.status_code == 200:
+            cid = response.json().get('Hash')
+            print(f"Successfully uploaded to local IPFS node! CID: {cid}")
+            
+            # Copy to MFS (Mutable File System) to make it visible in IPFS Desktop
+            try:
+                import urllib.parse
+                mfs_path = f"/{filename}"
+                cp_url = f"http://127.0.0.1:5001/api/v0/files/cp?arg=/ipfs/{cid}&arg={urllib.parse.quote(mfs_path)}"
+                requests.post(cp_url, timeout=3)
+                print(f"Pinned to local MFS as {mfs_path}")
+            except Exception as e:
+                print(f"Uploaded to local IPFS but could not pin to MFS UI: {e}")
+                
+            return cid
+        else:
+            print(f"Local IPFS API error: {response.status_code} - {response.text}")
+    except Exception as e:
+        print(f"Local IPFS node upload failed: {e}. Falling back to Pinata...")
+
+    # 2. Try Pinata if local fails and credentials are set
     pinata_jwt = os.getenv("PINATA_JWT")
     pinata_key = os.getenv("PINATA_API_KEY")
     pinata_secret = os.getenv("PINATA_API_SECRET")
 
-    filename = os.path.basename(filepath)
-
-    # 1. Try Pinata first if credentials are set
     if pinata_jwt or (pinata_key and pinata_secret):
         print(f"Uploading {filename} to Pinata IPFS...")
         try:
@@ -125,30 +154,7 @@ def upload_to_ipfs(filepath):
                 print(f"Pinata API error: {response.status_code} - {response.text}")
         except Exception as e:
             print(f"Pinata upload failed: {e}")
-            print("Falling back to local IPFS...")
 
-    # 2. Fallback: Local IPFS Daemon
-    try:
-        print(f"Uploading {filename} to local IPFS daemon...")
-        with open(filepath, 'rb') as f:
-            # Assumes local IPFS daemon is running on default port 5001
-            response = requests.post('http://127.0.0.1:5001/api/v0/add', files={'file': f}, timeout=5)
-        if response.status_code == 200:
-            cid = response.json().get('Hash')
-            # Copy to MFS to make it visible in IPFS Desktop
-            try:
-                import urllib.parse
-                mfs_path = f"/{filename}"
-                cp_url = f"http://127.0.0.1:5001/api/v0/files/cp?arg=/ipfs/{cid}&arg={urllib.parse.quote(mfs_path)}"
-                requests.post(cp_url, timeout=3)
-            except Exception as e:
-                print(f"Uploaded to local IPFS but could not pin to MFS UI: {e}")
-            return cid
-        else:
-            print(f"Local IPFS API error: {response.status_code} - {response.text}")
-    except Exception as e:
-        print(f"Local IPFS upload failed: {e}. Ensure IPFS Daemon is running locally if Pinata is not configured.")
-    
     return None
 
 # Root endpoint is handled at the bottom by the React static file server
@@ -530,30 +536,144 @@ def open_browser(payload: BrowserPayload):
 
 @app.delete("/api/v1/ipfs/unpin/{cid}")
 def unpin_ipfs_file(cid: str):
-    """Unpins a file from Pinata IPFS to manage storage space."""
+    """Unpins a file from local IPFS daemon (if running) and Pinata IPFS fallback."""
+    unpinned_locally = False
+    local_error = None
+
+    # 1. Try local IPFS node unpin
+    try:
+        url = f"http://127.0.0.1:5001/api/v0/pin/rm?arg={cid}"
+        response = requests.post(url, timeout=5)
+        if response.status_code == 200:
+            unpinned_locally = True
+            print(f"Successfully unpinned CID {cid} from local IPFS.")
+        else:
+            local_error = f"Status {response.status_code}: {response.text}"
+    except Exception as e:
+        local_error = str(e)
+
+    # 2. Try Pinata fallback unpin
     pinata_jwt = os.getenv("PINATA_JWT")
     pinata_key = os.getenv("PINATA_API_KEY")
     pinata_secret = os.getenv("PINATA_API_SECRET")
 
-    if not (pinata_jwt or (pinata_key and pinata_secret)):
-        return {"success": False, "error": "Pinata credentials not configured on backend."}
+    if pinata_jwt or (pinata_key and pinata_secret):
+        try:
+            url = f"https://api.pinata.cloud/pinning/unpin/{cid}"
+            headers = {}
+            if pinata_jwt:
+                headers["Authorization"] = f"Bearer {pinata_jwt.strip()}"
+            else:
+                headers["pinata_api_key"] = pinata_key.strip()
+                headers["pinata_secret_api_key"] = pinata_secret.strip()
+
+            response = requests.delete(url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                return {"success": True, "source": "pinata"}
+            else:
+                return {"success": unpinned_locally, "source": "local" if unpinned_locally else None, "error": f"Pinata returned {response.status_code}: {response.text}"}
+        except Exception as e:
+            return {"success": unpinned_locally, "source": "local" if unpinned_locally else None, "error": str(e)}
+
+    if unpinned_locally:
+        return {"success": True, "source": "local"}
+    
+    return {"success": False, "error": f"Local IPFS unpin failed: {local_error}. Pinata credentials not configured."}
+
+class AdminSendOtpPayload(BaseModel):
+    username: str
+    password: str
+
+class AdminVerifyRegisterPayload(BaseModel):
+    username: str
+    password: str
+    otp: str
+
+admin_otp_store = {}
+
+def send_otp_email(otp_code):
+    smtp_server = os.getenv("SMTP_SERVER")
+    smtp_port = os.getenv("SMTP_PORT")
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_password = os.getenv("SMTP_PASSWORD")
+    
+    target_email = "2022a6r040@mietjammu.in"
+    
+    subject = "Sentinel OS - New Admin Registration OTP"
+    body = f"Hello,\n\nYou have requested to register a new administrator in Sentinel OS.\n\nYour 6-digit verification code is: {otp_code}\n\nThis code will expire in 5 minutes.\n\nSecurely,\nSentinel Security Team"
+    
+    # Fallback to printing in console if credentials are not configured
+    if not smtp_server or not smtp_user or not smtp_password:
+        print(f"\n=======================================================")
+        print(f"!!! DEV MOCK OTP EMAIL SENT TO: {target_email} !!!")
+        print(f"Verification Code: {otp_code}")
+        print(f"=======================================================\n")
+        return True
 
     try:
-        url = f"https://api.pinata.cloud/pinning/unpin/{cid}"
-        headers = {}
-        if pinata_jwt:
-            headers["Authorization"] = f"Bearer {pinata_jwt.strip()}"
-        else:
-            headers["pinata_api_key"] = pinata_key.strip()
-            headers["pinata_secret_api_key"] = pinata_secret.strip()
-
-        response = requests.delete(url, headers=headers, timeout=10)
-        if response.status_code == 200:
-            return {"success": True}
-        else:
-            return {"success": False, "error": f"Pinata returned {response.status_code}: {response.text}"}
+        msg = MIMEText(body)
+        msg['Subject'] = subject
+        msg['From'] = smtp_user
+        msg['To'] = target_email
+        
+        port = int(smtp_port) if smtp_port else 587
+        server = smtplib.SMTP(smtp_server, port)
+        server.starttls()
+        server.login(smtp_user, smtp_password)
+        server.sendmail(smtp_user, [target_email], msg.as_string())
+        server.quit()
+        print(f"OTP successfully emailed to {target_email}")
+        return True
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        print(f"Failed to send SMTP email: {e}")
+        print(f"FALLBACK OTP PRINT: {otp_code}")
+        return False
+
+@app.post("/api/v1/admin/send_otp")
+def send_admin_otp(payload: AdminSendOtpPayload):
+    # Generate 6-digit OTP
+    otp = f"{random.randint(100000, 999999)}"
+    admin_otp_store[payload.username] = {
+        "password": payload.password,
+        "otp": otp,
+        "expires": time.time() + 300 # 5 minutes
+    }
+    
+    sent = send_otp_email(otp)
+    if sent:
+        return {"success": True, "message": "OTP sent successfully to 2022a6r040@mietjammu.in"}
+    else:
+        return {"success": True, "message": "OTP generated. (Fallback to server console)"}
+
+@app.post("/api/v1/admin/verify_otp_and_register")
+def verify_otp_and_register(payload: AdminVerifyRegisterPayload):
+    if payload.username not in admin_otp_store:
+        raise HTTPException(status_code=400, detail="No registration request found for this username. Please send OTP first.")
+        
+    store_data = admin_otp_store[payload.username]
+    
+    if time.time() > store_data["expires"]:
+        admin_otp_store.pop(payload.username, None)
+        raise HTTPException(status_code=400, detail="OTP has expired. Please request a new one.")
+        
+    if store_data["otp"] != payload.otp.strip():
+        raise HTTPException(status_code=400, detail="Invalid OTP code. Please check and try again.")
+        
+    if supabase_client:
+        try:
+            admin_data = {
+                "username": payload.username,
+                "password": store_data["password"]
+            }
+            supabase_client.table("admins").upsert(admin_data).execute()
+        except Exception as e:
+            print(f"Failed to save admin to Supabase: {e}")
+            raise HTTPException(status_code=500, detail=f"Database save failed: {str(e)}")
+    else:
+        print(f"MOCK REGISTERED ADMIN: {payload.username} (Supabase not configured)")
+        
+    admin_otp_store.pop(payload.username, None)
+    return {"success": True, "message": f"Administrator '{payload.username}' successfully registered!"}
 
 # Mount React Frontend
 frontend_dist = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist")

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ShieldAlert, Lock, User, AlertTriangle } from 'lucide-react';
 import './Login.css';
+import { supabase } from '../supabase';
 
 export default function Login() {
   const [username, setUsername] = useState('');
@@ -15,12 +16,29 @@ export default function Login() {
     setIsSubmitting(true);
     setErrorMsg(null);
 
-    // Simple local or backend admin auth check
-    // We will support default admin/admin123, or custom env if configured.
-    // If backend is running, we can check or do simple verification.
+    let loggedIn = false;
+
     try {
-      // In production, send a request to backend to verify admin credentials
-      // For now, let's use the local fallback to admin/admin123 for immediate usability
+      // 1. Try to authenticate against Supabase admins table
+      const { data, error } = await supabase
+        .from('admins')
+        .select('*')
+        .eq('username', username)
+        .eq('password', password)
+        .maybeSingle();
+
+      if (data && !error) {
+        localStorage.setItem('sentinel_admin_authenticated', 'true');
+        localStorage.setItem('sentinel_admin_username', username);
+        navigate('/control-room');
+        loggedIn = true;
+      }
+    } catch (e) {
+      console.log("Supabase admin auth check bypassed or table not created yet:", e);
+    }
+
+    if (!loggedIn) {
+      // 2. Local fallback
       if ((username === 'admin' && password === 'admin123') || (username === 'sentinel' && password === 'secure2026')) {
         localStorage.setItem('sentinel_admin_authenticated', 'true');
         localStorage.setItem('sentinel_admin_username', username);
@@ -28,11 +46,9 @@ export default function Login() {
       } else {
         setErrorMsg('Invalid administrative credentials. Access Denied.');
       }
-    } catch (err) {
-      setErrorMsg('Failed to process login. Please try again.');
-    } finally {
-      setIsSubmitting(false);
     }
+
+    setIsSubmitting(false);
   };
 
   return (

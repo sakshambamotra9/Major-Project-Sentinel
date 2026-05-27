@@ -37,10 +37,13 @@ export default function Sidebar() {
 
         <div className="nav-divider"></div>
 
-        <a href="#" className="nav-item disabled">
+        <NavLink 
+          to="/settings" 
+          className={({ isActive }) => isActive ? 'nav-item active' : 'nav-item'}
+        >
           <Settings size={20} />
-          <span>Settings (WIP)</span>
-        </a>
+          <span>Settings</span>
+        </NavLink>
       </nav>
       
       <div className="sidebar-footer">

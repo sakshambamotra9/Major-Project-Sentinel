@@ -142,6 +142,7 @@ warning_count = 0
 MAX_WARNINGS = 5
 exam_terminated = False
 termination_reason = "EXAM TERMINATED - MALPRACTICE"
+phone_detection_count = 0
 
 # Calibration state
 baseline_H = None
@@ -181,7 +182,7 @@ while True:
     h, w, _ = frame.shape
 
     # ---------------- YOLO (Detection) ----------------
-    results = model(frame, verbose=False)
+    results = model(frame, conf=0.15, verbose=False)
 
     phone_detected = False
     person_boxes_raw = []
@@ -479,6 +480,8 @@ while True:
 
         snapshot_count += 1
         warning_count += 1
+        if phone_detected:
+            phone_detection_count += 1
         last_capture_time = current_time
         looking_away_start_time = None  # Reset to prevent continuous snapping
         no_face_start_time = None
@@ -486,21 +489,25 @@ while True:
         multiple_people_start_time = None
         liveness_fail_start_time = None
 
-        if warning_count >= MAX_WARNINGS:
-            exam_terminated = True
+        # Disabled exam termination feature to allow testing
+        # if warning_count >= MAX_WARNINGS:
+        #     exam_terminated = True
 
     # ---------------- Display ----------------
-    # Show warning count on screen
-    cv2.putText(frame, f"Warnings: {warning_count}/{MAX_WARNINGS}", (10, h - 110),
+    # Show warning count and phone detection count on screen
+    cv2.putText(frame, f"Warnings: {warning_count}", (10, h - 110),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+    cv2.putText(frame, f"Phone Detects: {phone_detection_count}", (10, h - 80),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-    if exam_terminated:
-        cv2.rectangle(frame, (0, 0), (w, h), (0, 0, 255), -1)
-        cv2.putText(frame, termination_reason, (50, h // 2),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 3)
-        cv2.imshow("Proctoring", frame)
-        cv2.waitKey(4000) # Wait 4 seconds before closing
-        break
+    # Disabled termination display and break to allow testing
+    # if exam_terminated:
+    #     cv2.rectangle(frame, (0, 0), (w, h), (0, 0, 255), -1)
+    #     cv2.putText(frame, termination_reason, (50, h // 2),
+    #                 cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 3)
+    #     cv2.imshow("Proctoring", frame)
+    #     cv2.waitKey(4000) # Wait 4 seconds before closing
+    #     break
 
     cv2.imshow("Proctoring", frame)
 

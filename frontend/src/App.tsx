@@ -66,6 +66,8 @@ function App() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const analyzeFrameRef = useRef<() => Promise<void>>(async () => {});
+  const phoneDetectionCountRef = useRef(0);
+  const lastPhoneDetectionTimeRef = useRef(0);
 
 
   useEffect(() => {
@@ -250,6 +252,22 @@ function App() {
     }
   };
 
+  const resetSession = () => {
+    setStudentId('');
+    setStudentName('');
+    setStudentPassword('');
+    setSemester('');
+    setReferenceImage(null);
+    setCumulativeRisk(0);
+    setViolations([]);
+    violationsRef.current = [];
+    setAnswers({});
+    setCurrentQuestionIdx(0);
+    phoneDetectionCountRef.current = 0;
+    lastPhoneDetectionTimeRef.current = 0;
+    setAppState('LOGIN');
+  };
+
   const closeApplication = () => {
     fetch('http://127.0.0.1:8000/api/v1/system/close', { method: 'POST' }).catch(() => {});
   };
@@ -310,11 +328,19 @@ function App() {
         const flags: string[] = data.flags || [];
 
         if (flags.length > 0) {
-          // Phone → immediate termination
+          // Phone → increment counter with a 3-second cooldown, terminate on 3
           const phoneDetected = flags.some(f => f.toLowerCase().includes('phone'));
           if (phoneDetected) {
-            terminateExam();
-            return;
+            const now = Date.now();
+            if (now - lastPhoneDetectionTimeRef.current > 3000) {
+              lastPhoneDetectionTimeRef.current = now;
+              phoneDetectionCountRef.current += 1;
+              
+              if (phoneDetectionCountRef.current >= 3) {
+                terminateExam('Phone detected 3 times');
+                return;
+              }
+            }
           }
 
           // All other violations → cumulative risk bar + Firebase push
@@ -376,13 +402,21 @@ function App() {
       <div style={{ backgroundColor: '#2e7d32', color: 'white', height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
         <h1>EXAM SUBMITTED</h1>
         <h2>Your exam was submitted successfully.</h2>
-        <p style={{ marginBottom: '30px' }}>You may now close this application.</p>
-        <button 
-          onClick={closeApplication}
-          style={{ padding: '12px 30px', fontSize: '18px', fontWeight: 'bold', backgroundColor: 'white', color: '#2e7d32', border: 'none', borderRadius: '8px', cursor: 'pointer', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}
-        >
-          Close Application
-        </button>
+        <p style={{ marginBottom: '30px' }}>You may return to the portal or close the application.</p>
+        <div style={{ display: 'flex', gap: '20px' }}>
+          <button 
+            onClick={resetSession}
+            style={{ padding: '12px 30px', fontSize: '18px', fontWeight: 'bold', backgroundColor: 'white', color: '#2e7d32', border: 'none', borderRadius: '8px', cursor: 'pointer', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}
+          >
+            Return to Portal
+          </button>
+          <button 
+            onClick={closeApplication}
+            style={{ padding: '12px 30px', fontSize: '18px', fontWeight: 'bold', backgroundColor: 'rgba(255,255,255,0.2)', color: 'white', border: '1px solid white', borderRadius: '8px', cursor: 'pointer' }}
+          >
+            Close Application
+          </button>
+        </div>
       </div>
     );
   }
@@ -416,6 +450,27 @@ function App() {
         position: 'relative',
         overflow: 'hidden'
       }}>
+        {/* Close Button in Top Right */}
+        <button 
+          onClick={closeApplication}
+          style={{
+            position: 'absolute',
+            top: '20px',
+            right: '20px',
+            backgroundColor: '#d32f2f',
+            border: 'none',
+            color: 'white',
+            padding: '8px 18px',
+            borderRadius: '6px',
+            cursor: 'pointer',
+            fontWeight: 'bold',
+            fontSize: '14px',
+            zIndex: 100,
+            boxShadow: '0 4px 10px rgba(211, 47, 47, 0.3)'
+          }}
+        >
+          ✕ Close Application
+        </button>
         {/* Glow Effects */}
         <div style={{
           position: 'absolute',
@@ -966,7 +1021,7 @@ function App() {
                     violations.map((v, idx) => (
                       <div key={idx} style={{ borderLeft: '3px solid #f44336', paddingLeft: '10px', marginBottom: '12px', fontSize: '13px' }}>
                         <div style={{ color: '#999', fontSize: '11px', marginBottom: '2px' }}>{v.time}</div>
-                        <div style={{ color: '#333', fontWeight: '500' }}>{v.type}</div>
+                        <div style={{ color: '#333', fontWeight: '500' }}>Something unusual detected</div>
                         {v.cid && (
                           <div style={{ color: '#2196f3', fontSize: '10px', marginTop: '4px', wordBreak: 'break-all' }}>
                             📸 Snapshot saved
