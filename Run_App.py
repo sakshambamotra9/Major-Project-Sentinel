@@ -7,6 +7,7 @@ import uvicorn
 import webview
 import keyboard
 import subprocess
+import socket
 
 def get_base_path():
     if getattr(sys, 'frozen', False):
@@ -192,7 +193,67 @@ def enforce_fullscreen(window_title):
         traceback.print_exc()
 
 
+def is_port_open(port):
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            return s.connect_ex(('127.0.0.1', port)) == 0
+    except Exception:
+        return False
+
+def start_ipfs_daemon():
+    if is_port_open(5001):
+        print("IPFS Daemon is already running.")
+        return None
+
+    # Check for IPFS binary path
+    # 1. Bundled path (preferred for packaged release)
+    ipfs_bin = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bin", "ipfs.exe")
+    
+    # 2. Local AppData fallback path (for developer machine testing)
+    if not os.path.exists(ipfs_bin):
+        appdata_path = os.getenv("LOCALAPPDATA", "")
+        fallback_path = os.path.join(
+            appdata_path, 
+            "Programs", "IPFS Desktop", "resources", "app.asar.unpacked", 
+            "node_modules", "kubo", "kubo", "ipfs.exe"
+        )
+        if os.path.exists(fallback_path):
+            ipfs_bin = fallback_path
+
+    if not os.path.exists(ipfs_bin):
+        print("WARNING: IPFS executable not found. Please install IPFS Desktop or bundle ipfs.exe in bin/.")
+        return None
+
+    print(f"Using IPFS binary: {ipfs_bin}")
+
+    # Initialize repository if it doesn't exist
+    user_home = os.path.expanduser("~")
+    ipfs_path = os.path.join(user_home, ".ipfs")
+    if not os.path.exists(ipfs_path):
+        print("Initializing IPFS repository...")
+        subprocess.run([ipfs_bin, "init"], capture_output=True)
+        # Enable CORS programmatically on init
+        subprocess.run([ipfs_bin, "config", "set", "API.HTTPHeaders.Access-Control-Allow-Origin", '["*"]'], capture_output=True)
+
+    print("Starting background IPFS daemon...")
+    try:
+        # Start daemon silently in background (hide console window using creationflags)
+        proc = subprocess.Popen(
+            [ipfs_bin, "daemon"], 
+            stdout=subprocess.DEVNULL, 
+            stderr=subprocess.DEVNULL, 
+            creationflags=0x08000000  # CREATE_NO_WINDOW
+        )
+        return proc
+    except Exception as e:
+        print(f"Failed to start IPFS daemon: {e}")
+        return None
+
 if __name__ == '__main__':
+    # Start IPFS daemon in background if not running
+    print("Checking local IPFS state...")
+    ipfs_proc = start_ipfs_daemon()
+
     print("Starting Sentinel AI Server...")
     server_thread = threading.Thread(target=start_server, daemon=True)
     server_thread.start()
@@ -223,3 +284,12 @@ if __name__ == '__main__':
     lock_thread.start()
 
     webview.start()
+
+    # Clean up background IPFS process on exit
+    if ipfs_proc:
+        print("Stopping background IPFS daemon...")
+        ipfs_proc.terminate()
+        try:
+            ipfs_proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            ipfs_proc.kill()
