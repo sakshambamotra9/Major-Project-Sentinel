@@ -613,16 +613,16 @@ def send_otp_email(otp_code):
     try:
         msg = MIMEText(body)
         msg['Subject'] = subject
-        msg['From'] = smtp_user
+        msg['From'] = target_email
         msg['To'] = target_email
         
         port = int(smtp_port) if smtp_port else 587
         server = smtplib.SMTP(smtp_server, port)
         server.starttls()
         server.login(smtp_user, smtp_password)
-        server.sendmail(smtp_user, [target_email], msg.as_string())
+        server.sendmail(target_email, [target_email], msg.as_string())
         server.quit()
-        print(f"OTP successfully emailed to {target_email}")
+        print(f"OTP successfully emailed from {target_email} to {target_email}")
         return True
     except Exception as e:
         print(f"Failed to send SMTP email: {e}")
