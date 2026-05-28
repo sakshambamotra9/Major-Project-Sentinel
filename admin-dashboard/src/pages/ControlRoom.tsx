@@ -52,7 +52,7 @@ export default function ControlRoom() {
         if (error) throw error;
         
         if (data) {
-          const activeSessions = data.map(s => ({ id: s.student_id, ...s }) as Session);
+          const activeSessions = data.map(s => ({ ...s, id: `${s.student_id}_${s.exam_id}_${s.started_at}` }) as Session);
           setSessions(activeSessions);
         }
       } catch (error: any) {
@@ -112,10 +112,12 @@ export default function ControlRoom() {
     }
   };
 
-  const deleteSession = async (studentId: string) => {
+  const deleteSession = async (compositeId: string) => {
     if (window.confirm("Are you sure you want to delete this session? This will also delete its violation images from Pinata IPFS.")) {
-      const session = sessions.find(s => s.student_id === studentId);
-      const cids = session?.violations?.map(v => v.cid).filter((cid): cid is string => !!cid) || [];
+      const session = sessions.find(s => s.id === compositeId);
+      if (!session) return;
+      
+      const cids = session.violations?.map(v => v.cid).filter((cid): cid is string => !!cid) || [];
 
       if (cids.length > 0) {
         await unpinCids(cids);
@@ -124,11 +126,22 @@ export default function ControlRoom() {
       const { error } = await supabase
         .from('sessions')
         .delete()
-        .eq('student_id', studentId);
+        .eq('student_id', session.student_id)
+        .eq('exam_id', session.exam_id)
+        .eq('started_at', session.started_at);
+        
       if (error) {
         alert("Failed to delete session: " + error.message);
       } else {
         setSelectedSessionId(null);
+        // Force refresh local sessions list immediately
+        const { data, error: fetchErr } = await supabase
+          .from('sessions')
+          .select('*')
+          .order('last_updated', { ascending: false });
+        if (!fetchErr && data) {
+          setSessions(data.map(s => ({ ...s, id: `${s.student_id}_${s.exam_id}_${s.started_at}` }) as Session));
+        }
       }
     }
   };
@@ -154,6 +167,14 @@ export default function ControlRoom() {
         alert("Failed to clear sessions: " + error.message);
       } else {
         setSelectedSessionId(null);
+        // Force refresh local sessions list immediately
+        const { data, error: fetchErr } = await supabase
+          .from('sessions')
+          .select('*')
+          .order('last_updated', { ascending: false });
+        if (!fetchErr && data) {
+          setSessions(data.map(s => ({ ...s, id: `${s.student_id}_${s.exam_id}_${s.started_at}` }) as Session));
+        }
       }
     }
   };
@@ -211,6 +232,10 @@ export default function ControlRoom() {
                     <strong>{session.student_id}</strong>
                   </div>
                   <div className="info-row">
+                    <span>Started:</span>
+                    <strong>{new Date(session.started_at).toLocaleString()}</strong>
+                  </div>
+                  <div className="info-row">
                     <span>Semester:</span>
                     <strong>{session.semester || 'N/A'}</strong>
                   </div>
@@ -243,17 +268,19 @@ export default function ControlRoom() {
                       🛑 Force Terminate
                     </button>
                   )}
-                  <button 
-                    onClick={() => deleteSession(selectedSession.student_id)}
-                    style={{ padding: '6px 12px', background: '#4b5563', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}
-                  >
-                    🗑️ Delete
-                  </button>
+                  {selectedSession.status !== 'active' && (
+                    <button 
+                      onClick={() => deleteSession(selectedSession.id)}
+                      style={{ padding: '6px 12px', background: '#4b5563', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}
+                    >
+                      🗑️ Delete
+                    </button>
+                  )}
                 </div>
               </div>
               <div className="detail-body">
                 <h3>{selectedSession.student_name || selectedSession.student_id}</h3>
-                <p className="subtitle">Exam: {selectedSession.exam_id} • Semester: {selectedSession.semester}</p>
+                <p className="subtitle">Exam: {selectedSession.exam_id} • Semester: {selectedSession.semester} • Started: {new Date(selectedSession.started_at).toLocaleString()}</p>
                 
                 <h4 className="section-title">Telemetry Timeline ({selectedSession.violations?.length || 0} events)</h4>
                 
