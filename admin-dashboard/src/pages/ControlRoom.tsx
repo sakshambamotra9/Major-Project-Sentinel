@@ -37,7 +37,9 @@ interface Session {
 export default function ControlRoom() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selectedSession, setSelectedSession] = useState<Session | null>(null);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+
+  const selectedSession = sessions.find(s => s.id === selectedSessionId) || null;
 
   useEffect(() => {
     const fetchInitialSessions = async () => {
@@ -52,11 +54,6 @@ export default function ControlRoom() {
         if (data) {
           const activeSessions = data.map(s => ({ id: s.student_id, ...s }) as Session);
           setSessions(activeSessions);
-          
-          if (selectedSession) {
-            const updated = activeSessions.find(s => s.id === selectedSession.id);
-            if (updated) setSelectedSession(updated);
-          }
         }
       } catch (error: any) {
         console.error("Supabase fetch error:", error);
@@ -81,7 +78,7 @@ export default function ControlRoom() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [selectedSession]);
+  }, []);
 
   const unpinCids = async (cids: string[]) => {
     for (const cid of cids) {
@@ -131,7 +128,7 @@ export default function ControlRoom() {
       if (error) {
         alert("Failed to delete session: " + error.message);
       } else {
-        setSelectedSession(null);
+        setSelectedSessionId(null);
       }
     }
   };
@@ -156,7 +153,7 @@ export default function ControlRoom() {
       if (error) {
         alert("Failed to clear sessions: " + error.message);
       } else {
-        setSelectedSession(null);
+        setSelectedSessionId(null);
       }
     }
   };
@@ -201,8 +198,8 @@ export default function ControlRoom() {
             sessions.map(session => (
               <div 
                 key={session.id} 
-                className={`glass-panel session-card ${selectedSession?.id === session.id ? 'selected' : ''}`}
-                onClick={() => setSelectedSession(session)}
+                className={`glass-panel session-card ${selectedSessionId === session.id ? 'selected' : ''}`}
+                onClick={() => setSelectedSessionId(session.id)}
               >
                 <div className="card-header">
                   <h3>{session.student_name || 'Unknown Student'}</h3>
