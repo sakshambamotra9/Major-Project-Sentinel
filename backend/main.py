@@ -4,18 +4,36 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import os
+import sys
+import cv2
 import requests
 import base64
 import time
 import subprocess
 import threading
 import random
-import smtplib
-from email.mime.text import MIMEText
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
-load_dotenv()
+# Load environment configuration
+if getattr(sys, 'frozen', False):
+    exe_dir = os.path.dirname(sys.executable)
+    external_env = os.path.join(exe_dir, ".env")
+    if os.path.exists(external_env):
+        print(f"Loading environment from external .env: {external_env}")
+        load_dotenv(external_env)
+    else:
+        bundled_env = os.path.join(getattr(sys, '_MEIPASS', ''), "backend", ".env")
+        if os.path.exists(bundled_env):
+            print(f"Loading environment from bundled .env: {bundled_env}")
+            load_dotenv(bundled_env)
+        else:
+            load_dotenv()
+else:
+    # Development mode path: check current dir or backend/
+    load_dotenv()
+    if not os.getenv("SUPABASE_URL"):
+        load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 try:
     from models.identity import IdentityVerifier
@@ -78,14 +96,30 @@ class VisionPayload(BaseModel):
     frame_base64: str
     student_id: str | None = None
 
+class CalibratePayload(BaseModel):
+    student_id: str
+    frame_base64: str
+
 reference_embeddings = {}
+multi_reference_embeddings = {}
 candidate_frame_states = {}
 
 def start_warmup():
-    if IDENTITY_AVAILABLE and identity_verifier:
-        print("Starting DeepFace model warmup in background thread...")
-        thread = threading.Thread(target=identity_verifier.warmup, daemon=True)
-        thread.start()
+    def warmup_task():
+        try:
+            print("Background warmup: initializing models...")
+            if IDENTITY_AVAILABLE and identity_verifier:
+                identity_verifier.warmup()
+            if vision_analyzer:
+                # Accessing properties triggers lazy-loading and compilation in background
+                _ = vision_analyzer.ort_session
+                _ = vision_analyzer.mp_face_mesh
+                print("VisionAnalyzer models warmed up in background.")
+        except Exception as e:
+            print(f"Error during background model warmup: {e}")
+
+    thread = threading.Thread(target=warmup_task, daemon=True)
+    thread.start()
 
 @app.on_event("startup")
 def startup_event():
@@ -165,6 +199,101 @@ def verify_identity(payload: IdentityPayload):
         raise HTTPException(status_code=503, detail="Identity verification is currently disabled on the server.")
     result = identity_verifier.verify(payload.baseline_base64, payload.current_base64)
     return {"result": result}
+
+@app.post("/api/v1/calibrate_pose")
+def calibrate_pose(payload: CalibratePayload):
+    if not identity_verifier:
+        raise HTTPException(status_code=503, detail="Identity verification is currently disabled on the server.")
+        
+    img = identity_verifier.decode_image(payload.frame_base64)
+    if img is None:
+        raise HTTPException(status_code=400, detail="Invalid image frame.")
+        
+    h, w = img.shape[:2]
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    mesh_results = identity_verifier.mp_face_mesh.process(img_rgb)
+    
+    if not mesh_results.multi_face_landmarks:
+        return {
+            "success": False,
+            "error": "No face detected",
+            "angle_detected": None,
+            "current_status": get_calibration_status(payload.student_id)
+        }
+        
+    face_landmarks = mesh_results.multi_face_landmarks[0]
+    
+    # 1. Detect Pose Angle using relative landmarks
+    # Nose tip
+    nose = face_landmarks.landmark[1]
+    # Eye corners (left outer, right outer)
+    left_eye = face_landmarks.landmark[33]
+    right_eye = face_landmarks.landmark[263]
+    
+    eye_center_x = (left_eye.x + right_eye.x) / 2.0
+    eye_dist = abs(right_eye.x - left_eye.x)
+    
+    if eye_dist == 0:
+        return {
+            "success": False, 
+            "error": "Invalid face size", 
+            "angle_detected": None, 
+            "current_status": get_calibration_status(payload.student_id)
+        }
+        
+    # Horizontal pose difference ratio
+    horizontal_ratio = (nose.x - eye_center_x) / eye_dist
+    
+    # Vertical pose difference ratio
+    eye_y = (left_eye.y + right_eye.y) / 2.0
+    vertical_ratio = (nose.y - eye_y) / eye_dist
+    
+    angle_detected = "CENTER"
+    if horizontal_ratio < -0.15:
+        angle_detected = "LEFT"
+    elif horizontal_ratio > 0.15:
+        angle_detected = "RIGHT"
+    elif vertical_ratio < 0.55:
+        angle_detected = "UP"
+    elif vertical_ratio > 0.82:
+        angle_detected = "DOWN"
+        
+    # Get embedding
+    embedding = identity_verifier.get_embedding(payload.frame_base64)
+    if not embedding:
+        return {
+            "success": False,
+            "error": "Could not extract face embedding",
+            "angle_detected": angle_detected,
+            "current_status": get_calibration_status(payload.student_id)
+        }
+        
+    # Save the embedding for this angle
+    sid = payload.student_id
+    if sid not in multi_reference_embeddings:
+        multi_reference_embeddings[sid] = {
+            "CENTER": None,
+            "LEFT": None,
+            "RIGHT": None,
+            "UP": None,
+            "DOWN": None
+        }
+        
+    multi_reference_embeddings[sid][angle_detected] = embedding
+    
+    return {
+        "success": True,
+        "angle_detected": angle_detected,
+        "current_status": get_calibration_status(sid)
+    }
+
+def get_calibration_status(student_id):
+    if student_id not in multi_reference_embeddings:
+        return {"CENTER": False, "LEFT": False, "RIGHT": False, "UP": False, "DOWN": False}
+    status = {}
+    for k, v in multi_reference_embeddings[student_id].items():
+        status[k] = (v is not None)
+    return status
 
 @app.post("/api/v1/register_reference")
 def register_reference(payload: ReferencePayload):
@@ -271,12 +400,13 @@ def student_login(payload: StudentLoginPayload):
                     student_name = user_data["student_name"]
                     semester = user_data["semester"]
                     photo_url = user_data["photo_url"]
-                    embedding = user_data.get("embedding")
                     
-                    # On-the-fly embedding generation if it is not yet stored in Supabase
-                    if not embedding and photo_url:
+                    # Generate reference embedding on-the-fly using the active ArcFace model
+                    # to ensure it matches the model used for live camera verification
+                    embedding = None
+                    if photo_url and identity_verifier:
                         try:
-                            print(f"Downloading student reference photo for on-the-fly embedding: {photo_url}")
+                            print(f"Generating reference embedding from photo_url: {photo_url}")
                             import urllib.request
                             req = urllib.request.Request(
                                 photo_url, 
@@ -287,15 +417,19 @@ def student_login(payload: StudentLoginPayload):
                             img_b64 = base64.b64encode(img_bytes).decode('utf-8')
                             embedding = identity_verifier.get_embedding(img_b64)
                             if embedding:
-                                print(f"Successfully generated embedding from photo_url on-the-fly for {payload.student_id}")
-                                # Save back to Supabase so we don't have to download/compute it again
+                                print(f"Successfully generated embedding using active ArcFace model.")
+                                # Save it back to Supabase so that we don't have to keep downloading it (this updates it to the new model!)
                                 try:
                                     supabase_client.table("students").update({"embedding": embedding}).eq("student_id", payload.student_id).execute()
-                                    print(f"Saved generated embedding back to Supabase for {payload.student_id}")
+                                    print(f"Updated student embedding in Supabase database.")
                                 except Exception as save_err:
-                                    print(f"Could not save generated embedding back to Supabase: {save_err}")
+                                    print(f"Could not update embedding in Supabase: {save_err}")
                         except Exception as emb_err:
-                            print(f"Failed to generate embedding on-the-fly from url: {emb_err}")
+                            print(f"Failed to generate embedding from photo_url: {emb_err}")
+                            
+                    if not embedding:
+                        # Fallback to database value
+                        embedding = user_data.get("embedding")
                 else:
                     raise HTTPException(status_code=401, detail="Invalid student credentials.")
             else:
@@ -339,7 +473,7 @@ def analyze_vision(payload: VisionPayload):
     result = vision_analyzer.analyze_frame(payload.frame_base64)
     
     # Identity matching against reference embedding during pre-test
-    if payload.student_id and payload.student_id in reference_embeddings:
+    if payload.student_id and payload.student_id in reference_embeddings and identity_verifier:
         live_emb = identity_verifier.get_embedding(payload.frame_base64)
         if live_emb:
             ref_emb = reference_embeddings[payload.student_id]
@@ -351,6 +485,76 @@ def analyze_vision(payload: VisionPayload):
         result["identity_verified"] = True
         
     return {"result": result}
+
+def get_risk_label(score: int, violation_type: str) -> str:
+    has_serious = ("multiple" in violation_type.lower() or 
+                   "liveness" in violation_type.lower() or 
+                   "spoof" in violation_type.lower())
+    effective_score = max(score, 70) if has_serious else score
+    if effective_score <= 30:
+        return 'Low'
+    if effective_score <= 60:
+        return 'Moderate'
+    if effective_score <= 85:
+        return 'High'
+    return 'Very High'
+
+def push_violation_in_background(student_id: str, frame_score: int, violation_type: str, img_bytes: bytes):
+    def worker():
+        try:
+            # 1. Save frame locally
+            user_documents = os.path.join(os.path.expanduser("~"), "Documents")
+            violations_dir = os.path.join(user_documents, "Sentinel_Violations")
+            os.makedirs(violations_dir, exist_ok=True)
+            
+            import time
+            local_save_path = os.path.join(violations_dir, f"violation_{student_id or 'student'}_{int(time.time())}.jpg")
+            with open(local_save_path, "wb") as f:
+                f.write(img_bytes)
+            print(f"Saved violation screenshot locally to: {local_save_path}")
+            
+            # 2. Upload to IPFS
+            ipfs_cid = upload_to_ipfs(local_save_path)
+            
+            # 3. Push to Supabase if client exists
+            if supabase_client:
+                # Fetch existing violations and current risk_score
+                response = supabase_client.table("sessions").select("violations, risk_score").eq("student_id", student_id).execute()
+                current_violations = []
+                current_risk = 0
+                if response.data and len(response.data) > 0:
+                    current_violations = response.data[0].get("violations") or []
+                    current_risk = response.data[0].get("risk_score") or 0
+                
+                new_risk = min(100, current_risk + frame_score)
+                risk_label = get_risk_label(new_risk, violation_type)
+                
+                import datetime
+                # Time format like "5:38:03 pm"
+                now_time = datetime.datetime.now().strftime("%I:%M:%S %p").lower()
+                if now_time.startswith("0"):
+                    now_time = now_time[1:]
+                    
+                new_violation = {
+                    "type": violation_type,
+                    "time": now_time,
+                    "cid": ipfs_cid
+                }
+                
+                updated_violations = current_violations + [new_violation]
+                
+                supabase_client.table("sessions").update({
+                    "risk_score": new_risk,
+                    "risk_label": risk_label,
+                    "last_updated": datetime.datetime.utcnow().isoformat() + "Z",
+                    "violations": updated_violations
+                }).eq("student_id", student_id).execute()
+                print(f"Async violation pushed to Supabase for student {student_id}. CID: {ipfs_cid}")
+        except Exception as e:
+            print(f"Failed to push violation in background: {e}")
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
 
 @app.post("/api/v1/analyze_behavior")
 def analyze_behavior(payload: VisionPayload):
@@ -386,13 +590,10 @@ def analyze_behavior(payload: VisionPayload):
                     db_embedding = response.data[0].get("embedding")
                     db_photo_url = response.data[0].get("photo_url")
                     
-                    if db_embedding:
-                        reference_embeddings[payload.student_id] = db_embedding
-                        print(f"Recovered reference embedding for student {payload.student_id} from database.")
-                    elif db_photo_url:
-                        # Lazy generation on-the-fly from photo_url
+                    if db_photo_url and identity_verifier:
+                        # Lazy generation on-the-fly from photo_url to match active ArcFace model
                         try:
-                            print(f"Lazy downloading student reference photo: {db_photo_url}")
+                            print(f"Lazy downloading and generating embedding from photo: {db_photo_url}")
                             import urllib.request
                             req = urllib.request.Request(
                                 db_photo_url, 
@@ -404,14 +605,19 @@ def analyze_behavior(payload: VisionPayload):
                             generated_emb = identity_verifier.get_embedding(img_b64)
                             if generated_emb:
                                 reference_embeddings[payload.student_id] = generated_emb
-                                print(f"Successfully generated lazy embedding for {payload.student_id}")
-                                # Save back to DB
+                                print(f"Successfully lazy generated embedding for {payload.student_id}")
+                                # Save back to DB to update it to new model
                                 try:
                                     supabase_client.table("students").update({"embedding": generated_emb}).eq("student_id", payload.student_id).execute()
                                 except Exception:
                                     pass
                         except Exception as emb_err:
                             print(f"Failed to lazy generate embedding: {emb_err}")
+                            if db_embedding:
+                                reference_embeddings[payload.student_id] = db_embedding
+                    elif db_embedding:
+                        reference_embeddings[payload.student_id] = db_embedding
+                        print(f"Recovered reference embedding for student {payload.student_id} from database.")
             except Exception as e:
                 print(f"Failed to recover reference embedding from database: {e}")
 
@@ -427,9 +633,6 @@ def analyze_behavior(payload: VisionPayload):
         
         state = candidate_frame_states[payload.student_id]
         
-        # Identity verification during the exam is disabled (only verified during pre-test check)
-        state["last_verify_failed"] = False
-            
         # Track leaving the frame repeatedly
         if vision_result.get("no_face_detected"):
             state["consecutive_no_face"] += 1
@@ -445,35 +648,24 @@ def analyze_behavior(payload: VisionPayload):
             state["consecutive_no_face"] = 0
             state["last_state"] = "in"
 
-    ipfs_cid = None
-    if score > 0:
-        # We found a violation! Save the frame and upload to IPFS.
+    if score > 0 and payload.student_id:
         try:
-            # Decode base64 (handle data URI scheme if present)
+            # Decode base64 frame in main thread to avoid copying issues across threads
             img_data_str = payload.frame_base64
             if "," in img_data_str:
                 img_data_str = img_data_str.split(",")[1]
             img_bytes = base64.b64decode(img_data_str)
             
-            # Save to temporary file
-            filename = f"violation_{int(time.time())}.jpg"
-            with open(filename, "wb") as f:
-                f.write(img_bytes)
-                
-            # Upload to IPFS
-            ipfs_cid = upload_to_ipfs(filename)
-            
-            # Clean up local file
-            if os.path.exists(filename):
-                os.remove(filename)
+            # Delegate to background thread
+            push_violation_in_background(payload.student_id, score, ", ".join(flags), img_bytes)
         except Exception as e:
-            print(f"Failed to process and upload snapshot: {e}")
+            print(f"Failed to kick off background violation push: {e}")
 
     return {
         "risk_score": score,
         "flags": flags,
         "vision_details": vision_result,
-        "ipfs_cid": ipfs_cid
+        "ipfs_cid": None
     }
 
 @app.post("/api/v1/system/wifi-flyout")
@@ -489,50 +681,6 @@ def open_wifi_flyout():
 def close_system():
     os._exit(0)
     return {"success": True}
-
-class BrowserPayload(BaseModel):
-    url: str = "https://www.bing.com"
-
-@app.post("/api/v1/browser/open")
-def open_browser(payload: BrowserPayload):
-    """
-    Launches Microsoft Edge (or Chrome as fallback) in fullscreen app mode.
-    This gives a real browser experience — no iframe X-Frame-Options restrictions.
-    """
-    url = payload.url
-    try:
-        # Try Edge first (pre-installed on all modern Windows)
-        edge_paths = [
-            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-        ]
-        chrome_paths = [
-            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-        ]
-
-        browser_exe = None
-        for p in edge_paths + chrome_paths:
-            if os.path.exists(p):
-                browser_exe = p
-                break
-
-        if browser_exe:
-            subprocess.Popen([
-                browser_exe,
-                f"--app={url}",
-                "--start-fullscreen",
-                "--no-first-run",
-                "--disable-translate",
-                "--disable-infobars",
-            ])
-        else:
-            # Fallback: open with default browser via shell
-            os.system(f'start "" "{url}"')
-
-        return {"success": True}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
 
 @app.delete("/api/v1/ipfs/unpin/{cid}")
 def unpin_ipfs_file(cid: str):
@@ -580,100 +728,7 @@ def unpin_ipfs_file(cid: str):
     
     return {"success": False, "error": f"Local IPFS unpin failed: {local_error}. Pinata credentials not configured."}
 
-class AdminSendOtpPayload(BaseModel):
-    username: str
-    password: str
 
-class AdminVerifyRegisterPayload(BaseModel):
-    username: str
-    password: str
-    otp: str
-
-admin_otp_store = {}
-
-def send_otp_email(otp_code):
-    smtp_server = os.getenv("SMTP_SERVER")
-    smtp_port = os.getenv("SMTP_PORT")
-    smtp_user = os.getenv("SMTP_USER")
-    smtp_password = os.getenv("SMTP_PASSWORD")
-    
-    target_email = "2022a6r040@mietjammu.in"
-    
-    subject = "Sentinel OS - New Admin Registration OTP"
-    body = f"Hello,\n\nYou have requested to register a new administrator in Sentinel OS.\n\nYour 6-digit verification code is: {otp_code}\n\nThis code will expire in 5 minutes.\n\nSecurely,\nSentinel Security Team"
-    
-    # Fallback to printing in console if credentials are not configured
-    if not smtp_server or not smtp_user or not smtp_password:
-        print(f"\n=======================================================")
-        print(f"!!! DEV MOCK OTP EMAIL SENT TO: {target_email} !!!")
-        print(f"Verification Code: {otp_code}")
-        print(f"=======================================================\n")
-        return True
-
-    try:
-        msg = MIMEText(body)
-        msg['Subject'] = subject
-        msg['From'] = target_email
-        msg['To'] = target_email
-        
-        port = int(smtp_port) if smtp_port else 587
-        server = smtplib.SMTP(smtp_server, port)
-        server.starttls()
-        server.login(smtp_user, smtp_password)
-        server.sendmail(target_email, [target_email], msg.as_string())
-        server.quit()
-        print(f"OTP successfully emailed from {target_email} to {target_email}")
-        return True
-    except Exception as e:
-        print(f"Failed to send SMTP email: {e}")
-        print(f"FALLBACK OTP PRINT: {otp_code}")
-        return False
-
-@app.post("/api/v1/admin/send_otp")
-def send_admin_otp(payload: AdminSendOtpPayload):
-    # Generate 6-digit OTP
-    otp = f"{random.randint(100000, 999999)}"
-    admin_otp_store[payload.username] = {
-        "password": payload.password,
-        "otp": otp,
-        "expires": time.time() + 300 # 5 minutes
-    }
-    
-    sent = send_otp_email(otp)
-    if sent:
-        return {"success": True, "message": "OTP sent successfully to 2022a6r040@mietjammu.in"}
-    else:
-        return {"success": True, "message": "OTP generated. (Fallback to server console)"}
-
-@app.post("/api/v1/admin/verify_otp_and_register")
-def verify_otp_and_register(payload: AdminVerifyRegisterPayload):
-    if payload.username not in admin_otp_store:
-        raise HTTPException(status_code=400, detail="No registration request found for this username. Please send OTP first.")
-        
-    store_data = admin_otp_store[payload.username]
-    
-    if time.time() > store_data["expires"]:
-        admin_otp_store.pop(payload.username, None)
-        raise HTTPException(status_code=400, detail="OTP has expired. Please request a new one.")
-        
-    if store_data["otp"] != payload.otp.strip():
-        raise HTTPException(status_code=400, detail="Invalid OTP code. Please check and try again.")
-        
-    if supabase_client:
-        try:
-            admin_data = {
-                "username": payload.username,
-                "password": store_data["password"]
-            }
-            supabase_client.table("admins").upsert(admin_data).execute()
-        except Exception as e:
-            print(f"Failed to save admin to Supabase: {e}")
-            raise HTTPException(status_code=500, detail=f"Database save failed: {str(e)}")
-    else:
-        print(f"MOCK REGISTERED ADMIN: {payload.username} (Supabase not configured)")
-        
-    admin_otp_store.pop(payload.username, None)
-    return {"success": True, "message": f"Administrator '{payload.username}' successfully registered!"}
 
 # Mount React Frontend
 frontend_dist = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist")

@@ -5,10 +5,11 @@ import base64
 import onnxruntime as ort
 import math
 import os
+import threading
 
 # COCO class names (only what we need)
-COCO_CLASSES = {0: "person", 67: "cell phone", 73: "book"}
-CONF_THRESHOLD = 0.25
+COCO_CLASSES = {0: "person", 67: "cell phone", 73: "anomaly detected"}
+CONF_THRESHOLD = 0.20
 IOU_THRESHOLD = 0.45
 INPUT_SIZE = 640
 
@@ -42,17 +43,14 @@ def _nms(boxes, scores, iou_threshold):
 
 class VisionAnalyzer:
     def __init__(self):
-        # Locate yolo11n.onnx in the root directory
-        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        model_path = os.path.join(base_dir, "yolo11n.onnx")
-        self.ort_session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
-        self.input_name = self.ort_session.get_inputs()[0].name
+        self._ort_session = None
+        self._mp_face_mesh = None
+        self.input_name = None
+        self._lock = threading.Lock()
         
         # COCO ids: 67=cell phone, 73=book
         self.unauthorized_classes = [67, 73] 
-        self.mp_face_mesh = mp.solutions.face_mesh.FaceMesh(
-            static_image_mode=True, max_num_faces=1, min_detection_confidence=0.5, refine_landmarks=True
-        )
+        
         # Liveness tracking
         self.blink_threshold = 0.25
         self.consecutive_frames_below_threshold = 0
@@ -66,6 +64,33 @@ class VisionAnalyzer:
         # Calibration state
         self.baseline_H = None
         self.calibration_frames = []
+
+    def _init_models(self):
+        with self._lock:
+            if self._ort_session is not None:
+                return
+            
+            print("Lazy-loading YOLOv11 and MediaPipe FaceMesh for Vision Analysis...")
+            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            model_path = os.path.join(base_dir, "yolo11n.onnx")
+            
+            self._ort_session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+            self.input_name = self._ort_session.get_inputs()[0].name
+            
+            self._mp_face_mesh = mp.solutions.face_mesh.FaceMesh(
+                static_image_mode=False, max_num_faces=1, min_detection_confidence=0.5, refine_landmarks=True
+            )
+            print("YOLOv11 and FaceMesh lazy loaded successfully.")
+
+    @property
+    def ort_session(self):
+        self._init_models()
+        return self._ort_session
+
+    @property
+    def mp_face_mesh(self):
+        self._init_models()
+        return self._mp_face_mesh
 
     @staticmethod
     def calculate_gaze_ratio(iris_center, eye_left_point, eye_right_point):
@@ -176,14 +201,15 @@ class VisionAnalyzer:
             hist = pdata['history']
             if pid == largest_id:
                 pdata['is_real'] = True
-            elif len(hist) > 10:
+            elif len(hist) >= 2:
                 ws = [b[2] for b in hist]
                 hs = [b[3] for b in hist]
                 cxs = [b[0] for b in hist]
                 cys = [b[1] for b in hist]
                 total_var = np.var(ws) + np.var(hs) + np.var(cxs) + np.var(cys)
                 
-                pdata['is_real'] = total_var > 15.0
+                var_threshold = 2.0 if len(hist) < 10 else 15.0
+                pdata['is_real'] = total_var > var_threshold
             else:
                 pdata['is_real'] = False
             
@@ -248,8 +274,8 @@ class VisionAnalyzer:
             # True gaze deviation (looking away from screen) horizontally
             if self.baseline_H is None:
                 self.calibration_frames.append(avg_gaze_ratio)
-                if len(self.calibration_frames) >= 30:
-                    self.baseline_H = sum(self.calibration_frames) / 30.0
+                if len(self.calibration_frames) >= 10:
+                    self.baseline_H = sum(self.calibration_frames) / 10.0
                 results["calibrating"] = True
             else:
                 if avg_gaze_ratio < 0.40 or avg_gaze_ratio > 0.59:

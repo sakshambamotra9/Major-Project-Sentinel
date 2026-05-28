@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import './App.css';
 import { supabase, initStudentSession, pushViolation, markSessionTerminated, markSessionCompleted, fetchPublishedExams } from './supabase';
 
-type AppState = 'LOGIN' | 'HOME' | 'SETUP' | 'PRE_TEST' | 'EXAM' | 'TERMINATED' | 'SUBMITTED';
+type AppState = 'LOGIN' | 'SETUP' | 'PRE_TEST' | 'EXAM' | 'TERMINATED' | 'SUBMITTED';
 
 type RiskLevel = 'Low' | 'Moderate' | 'High' | 'Very High';
 
@@ -36,8 +36,6 @@ function App() {
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [referenceImage, setReferenceImage] = useState<string | null>(null);
   const [registeringFace, setRegisteringFace] = useState(false);
-  const [browserStatus, setBrowserStatus] = useState<'idle' | 'opened'>('idle');
-  const [urlInput, setUrlInput] = useState('');
   const [cumulativeRisk, setCumulativeRisk] = useState(0);
   const cumulativeRiskRef = useRef(0);
   const [violations, setViolations] = useState<{ type: string; cid: string | null; time: string }[]>([]);
@@ -59,10 +57,11 @@ function App() {
     plainBackground: false,
     livenessPassed: false,
     gazeCentered: false,
-    noPhoneDetected: true,  // Start true, flips false if phone is in frame
     identityVerified: false,
   });
   
+
+
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const analyzeFrameRef = useRef<() => Promise<void>>(async () => {});
@@ -94,9 +93,10 @@ function App() {
 
   useEffect(() => {
     if (appState === 'PRE_TEST' || appState === 'EXAM') {
+      const intervalMs = 1000;
       const interval = setInterval(() => {
         analyzeFrameRef.current();
-      }, 1000);
+      }, intervalMs);
       return () => clearInterval(interval);
     }
   }, [appState]);
@@ -117,11 +117,13 @@ function App() {
     }
   }, [appState]);
 
-  // Realtime Session Force-Termination check from Admin
+  // Realtime Session Force-Termination check from Admin with polling fallback
   useEffect(() => {
     if (appState !== 'EXAM' || !studentId) return;
 
-    console.log("Subscribing to realtime session updates for force-terminate monitoring...");
+    console.log("Subscribing to realtime session updates and starting fallback polling for force-terminate monitoring...");
+    
+    // 1. Realtime subscription
     const channel = supabase
       .channel(`session-terminate-${studentId}`)
       .on(
@@ -144,8 +146,31 @@ function App() {
       )
       .subscribe();
 
+    // 2. Fallback polling check (every 3 seconds) in case Realtime is not active/enabled on the table
+    const checkStatus = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('sessions')
+          .select('status, termination_reason')
+          .eq('student_id', studentId)
+          .maybeSingle();
+          
+        if (!error && data && data.status === 'terminated') {
+          const reason = data.termination_reason || 'Terminated by Admin';
+          setAppState('TERMINATED');
+          stopExam();
+          alert(`This exam has been FORCE TERMINATED by the Administrator.\nReason: ${reason}`);
+        }
+      } catch (err) {
+        console.warn("Error polling session status:", err);
+      }
+    };
+
+    const pollInterval = setInterval(checkStatus, 3000);
+
     return () => {
       supabase.removeChannel(channel);
+      clearInterval(pollInterval);
     };
   }, [appState, studentId]);
 
@@ -303,16 +328,12 @@ function App() {
         if (!response.ok) return;
         const data = await response.json();
         const vision = data.result || {};
-        const phoneInFrame = (vision.objects_found || []).some((obj: string) =>
-          obj.toLowerCase().includes('phone') || obj.toLowerCase().includes('cell')
-        );
         setPreTestChecks({
           calibrating: !!vision.calibrating,
           faceDetected: !vision.no_face_detected,
           plainBackground: !vision.background_warning,
           livenessPassed: !vision.liveness_failed,
           gazeCentered: !vision.gaze_deviation,
-          noPhoneDetected: !phoneInFrame,
           identityVerified: !!vision.identity_verified,
         });
 
@@ -354,10 +375,6 @@ function App() {
 
             setCumulativeRisk(newRisk);
             setViolations(newViolations);
-
-            const riskLabel = getRiskInfo(newRisk, newViolations).label;
-            pushViolation(studentId, newRisk, riskLabel, flags.join(', '), ipfsCid)
-              .catch(e => console.warn('Firebase push failed:', e));
           }
         }
       }
@@ -388,7 +405,6 @@ function App() {
     preTestChecks.plainBackground && 
     preTestChecks.livenessPassed && 
     preTestChecks.gazeCentered &&
-    preTestChecks.noPhoneDetected &&
     preTestChecks.identityVerified;
 
   const formatTime = (seconds: number) => {
@@ -626,34 +642,6 @@ function App() {
   return (
     <div style={{ fontFamily: 'Segoe UI, Tahoma, Geneva, Verdana, sans-serif', backgroundColor: '#f4f6f8', minHeight: '100vh', display: 'flex', overflow: 'hidden' }}>
       
-      {/* Sidebar Navigation (Visible only before test starts) */}
-      {(appState === 'HOME' || appState === 'SETUP') && (
-        <div style={{ width: '250px', backgroundColor: '#0d47a1', color: 'white', display: 'flex', flexDirection: 'column', boxShadow: '2px 0 10px rgba(0,0,0,0.2)', zIndex: 10 }}>
-          <div style={{ padding: '20px', borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
-            <h2 style={{ margin: 0, fontSize: '22px', display: 'flex', alignItems: 'center', gap: '10px' }}>
-              🛡️ Sentinel OS
-            </h2>
-          </div>
-          <div style={{ flex: 1, padding: '20px 0' }}>
-            <div 
-              onClick={() => setAppState('HOME')}
-              style={{ padding: '15px 20px', cursor: 'pointer', backgroundColor: appState === 'HOME' ? 'rgba(255,255,255,0.15)' : 'transparent', borderLeft: appState === 'HOME' ? '4px solid #64b5f6' : '4px solid transparent', transition: 'all 0.2s', display: 'flex', alignItems: 'center', gap: '12px', fontSize: '16px' }}
-            >
-              <span>🌐</span> Web Browser
-            </div>
-            <div 
-              onClick={() => setAppState('SETUP')}
-              style={{ padding: '15px 20px', cursor: 'pointer', backgroundColor: appState === 'SETUP' ? 'rgba(255,255,255,0.15)' : 'transparent', borderLeft: appState === 'SETUP' ? '4px solid #64b5f6' : '4px solid transparent', transition: 'all 0.2s', display: 'flex', alignItems: 'center', gap: '12px', fontSize: '16px' }}
-            >
-              <span>📝</span> Take a Test
-            </div>
-          </div>
-          <div style={{ padding: '20px', fontSize: '12px', color: 'rgba(255,255,255,0.5)', textAlign: 'center' }}>
-            Sentinel Secure Environment v1.0
-          </div>
-        </div>
-      )}
-
       {/* Main Content Area */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative' }}>
         
@@ -687,98 +675,7 @@ function App() {
       </header>
 
         {/* Main Body */}
-        <div style={{ flex: 1, display: 'flex', justifyContent: 'center', padding: appState === 'HOME' ? '0' : '20px', overflow: 'hidden' }}>
-
-          {/* HOME SCREEN / BROWSER */}
-          {appState === 'HOME' && (
-            <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', backgroundColor: 'white', position: 'relative' }}>
-              {browserStatus === 'idle' ? (
-                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff' }}>
-                  <div style={{ fontSize: '80px', fontWeight: 'bold', letterSpacing: '-3px', marginBottom: '30px' }}>
-                    <span style={{ color: '#4285F4' }}>G</span>
-                    <span style={{ color: '#EA4335' }}>o</span>
-                    <span style={{ color: '#FBBC05' }}>o</span>
-                    <span style={{ color: '#4285F4' }}>g</span>
-                    <span style={{ color: '#34A853' }}>l</span>
-                    <span style={{ color: '#EA4335' }}>e</span>
-                  </div>
-                  <form 
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      let query = urlInput.trim();
-                      if (!query) return;
-                      
-                      let targetUrl = '';
-                      if (query.startsWith('http://') || query.startsWith('https://')) {
-                        targetUrl = query;
-                      } else if (query.includes('.') && !query.includes(' ')) {
-                        targetUrl = 'https://' + query;
-                      } else {
-                        targetUrl = 'https://www.google.com/search?q=' + encodeURIComponent(query);
-                      }
-                      
-                      setBrowserStatus('opened');
-                      fetch('http://127.0.0.1:8000/api/v1/browser/open', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ url: targetUrl }),
-                      }).catch(err => console.error('Error opening browser:', err));
-                    }}
-                    style={{ width: '100%', maxWidth: '600px', position: 'relative' }}
-                  >
-                    <div style={{ display: 'flex', alignItems: 'center', border: '1px solid #dfe1e5', borderRadius: '24px', padding: '10px 20px', boxShadow: '0 1px 6px rgba(32,33,36,.28)', transition: 'box-shadow 0.2s', backgroundColor: 'white' }}>
-                      <span style={{ color: '#9aa0a6', marginRight: '10px', fontSize: '18px' }}>🔍</span>
-                      <input 
-                        type="text" 
-                        value={urlInput} 
-                        onChange={e => setUrlInput(e.target.value)} 
-                        placeholder="Search Google or type a URL"
-                        style={{ flex: 1, border: 'none', outline: 'none', fontSize: '16px', backgroundColor: 'transparent' }} 
-                      />
-                    </div>
-                    <div style={{ display: 'flex', justifyContent: 'center', gap: '15px', marginTop: '25px' }}>
-                      <button type="submit" style={{ padding: '10px 20px', backgroundColor: '#f8f9fa', border: '1px solid #f8f9fa', borderRadius: '4px', color: '#3c4043', cursor: 'pointer', fontSize: '14px' }}>Google Search</button>
-                      <button 
-                        type="button" 
-                        onClick={() => {
-                          setBrowserStatus('opened');
-                          setUrlInput('https://www.google.com');
-                          fetch('http://127.0.0.1:8000/api/v1/browser/open', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ url: 'https://www.google.com' }),
-                          }).catch(err => console.error('Error opening browser:', err));
-                        }} 
-                        style={{ padding: '10px 20px', backgroundColor: '#f8f9fa', border: '1px solid #f8f9fa', borderRadius: '4px', color: '#3c4043', cursor: 'pointer', fontSize: '14px' }}
-                      >
-                        I'm Feeling Lucky
-                      </button>
-                    </div>
-                  </form>
-                </div>
-              ) : (
-                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff', padding: '20px' }}>
-                  <div style={{ fontSize: '60px', marginBottom: '20px' }}>🌐</div>
-                  <h3 style={{ margin: '0 0 10px 0', color: '#333' }}>Secure Browser Opened</h3>
-                  <p style={{ color: '#666', textAlign: 'center', maxWidth: '450px', margin: '0 0 20px 0', fontSize: '15px', lineHeight: '1.6' }}>
-                    We have launched Microsoft Edge in secure application mode. This opens a separate fullscreen window to load any webpage securely without iframe restrictions.
-                  </p>
-                  <div style={{ fontSize: '14px', backgroundColor: '#f1f3f4', padding: '10px 20px', borderRadius: '20px', border: '1px solid #dfe1e5', marginBottom: '30px', color: '#3c4043', fontFamily: 'monospace' }}>
-                    {urlInput.startsWith('http') ? urlInput : `https://www.google.com/search?q=${urlInput}`}
-                  </div>
-                  <button 
-                    onClick={() => {
-                      setBrowserStatus('idle');
-                      setUrlInput('');
-                    }}
-                    style={{ padding: '12px 30px', backgroundColor: '#0d47a1', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '15px', boxShadow: '0 2px 5px rgba(0,0,0,0.2)', transition: 'background-color 0.2s' }}
-                  >
-                    ← Close Browser and Go Back
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
+        <div style={{ flex: 1, display: 'flex', justifyContent: 'center', padding: '20px', overflow: 'hidden' }}>
 
           {/* SETUP SCREEN */}
           {appState === 'SETUP' && (
@@ -878,7 +775,6 @@ function App() {
                     <CheckItem label="Clear Environment" passed={preTestChecks.plainBackground} />
                     <CheckItem label="Real Person (Liveness Passed)" passed={preTestChecks.livenessPassed} />
                     <CheckItem label="Looking at Screen" passed={preTestChecks.gazeCentered} />
-                    <CheckItem label="No Phone in Frame" passed={preTestChecks.noPhoneDetected} />
                   </div>
                 )}
               </div>
@@ -892,11 +788,13 @@ function App() {
                   border: 'none', borderRadius: '4px', cursor: !isPreTestReady ? 'not-allowed' : 'pointer',
                 }}
               >
-                {isPreTestReady ? 'Start Official Exam' : 'Waiting for checks...'}
+                {isPreTestReady ? '🟢 Start Official Exam' : 'Waiting for checks...'}
               </button>
             </div>
           </div>
         )}
+
+
 
         {/* EXAM SCREEN */}
         {appState === 'EXAM' && (
@@ -977,7 +875,9 @@ function App() {
               
               {/* Camera Mini-view */}
               <div style={{ backgroundColor: 'white', padding: '10px', borderRadius: '8px', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
-                <div style={{ fontSize: '12px', fontWeight: 'bold', color: '#666', marginBottom: '8px', textTransform: 'uppercase' }}>Live Monitoring</div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 'bold', color: '#666', textTransform: 'uppercase' }}>Live Monitoring</span>
+                </div>
                 <video 
                   ref={videoRef} 
                   autoPlay 
@@ -1021,7 +921,7 @@ function App() {
                     violations.map((v, idx) => (
                       <div key={idx} style={{ borderLeft: '3px solid #f44336', paddingLeft: '10px', marginBottom: '12px', fontSize: '13px' }}>
                         <div style={{ color: '#999', fontSize: '11px', marginBottom: '2px' }}>{v.time}</div>
-                        <div style={{ color: '#333', fontWeight: '500' }}>Something unusual detected</div>
+                        <div style={{ color: '#333', fontWeight: '500' }}>{v.type}</div>
                         {v.cid && (
                           <div style={{ color: '#2196f3', fontSize: '10px', marginTop: '4px', wordBreak: 'break-all' }}>
                             📸 Snapshot saved

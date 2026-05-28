@@ -17,21 +17,55 @@ def get_base_path():
 BASE_PATH = get_base_path()
 
 def start_server():
-    backend_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend")
-    os.chdir(backend_path)
-    if backend_path not in sys.path:
-        sys.path.insert(0, backend_path)
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, log_level="warning")
+    try:
+        backend_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend")
+        os.chdir(backend_path)
+        if backend_path not in sys.path:
+            sys.path.insert(0, backend_path)
+        # Set to info log level so we can see what's happening
+        uvicorn.run("main:app", host="127.0.0.1", port=8000, log_level="info")
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        print(f"CRITICAL ERROR in server thread:\n{tb}")
+        try:
+            log_path = os.path.join(os.path.expanduser("~"), "sentinel_backend_error.log")
+            with open(log_path, "w") as f:
+                f.write(tb)
+        except:
+            pass
 
-def wait_for_server():
+def wait_for_server(thread):
     print("Waiting for AI Models to load...")
+    start_time = time.time()
     while True:
+        if not thread.is_alive():
+            import ctypes
+            error_msg = "The backend server failed to start.\n"
+            log_path = os.path.join(os.path.expanduser("~"), "sentinel_backend_error.log")
+            if os.path.exists(log_path):
+                try:
+                    with open(log_path, "r") as f:
+                        error_msg += f"\nError Traceback:\n{f.read()}"
+                except:
+                    pass
+            
+            ctypes.windll.user32.MessageBoxW(0, error_msg, "Sentinel Startup Error", 0x10 | 0x00020000)
+            sys.exit(1)
+            
         try:
             res = urllib.request.urlopen("http://127.0.0.1:8000/", timeout=1)
             if res.getcode() == 200:
                 break
         except Exception:
             time.sleep(1)
+            
+        # 45 second timeout for slow model loading
+        if time.time() - start_time > 45:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(0, "Backend server took too long to load (Timeout).", "Sentinel Timeout", 0x10 | 0x00020000)
+            sys.exit(1)
+            
     print("Server is ready!")
 
 # Maintain reference to hook to prevent GC
@@ -200,11 +234,7 @@ def is_port_open(port):
     except Exception:
         return False
 
-def start_ipfs_daemon():
-    if is_port_open(5001):
-        print("IPFS Daemon is already running.")
-        return None
-
+def get_ipfs_bin():
     # Check for IPFS binary path
     # 1. Bundled path (preferred for packaged release)
     ipfs_bin = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bin", "ipfs.exe")
@@ -220,7 +250,17 @@ def start_ipfs_daemon():
         if os.path.exists(fallback_path):
             ipfs_bin = fallback_path
 
-    if not os.path.exists(ipfs_bin):
+    if os.path.exists(ipfs_bin):
+        return ipfs_bin
+    return None
+
+def start_ipfs_daemon():
+    if is_port_open(5001):
+        print("IPFS Daemon is already running.")
+        return None
+
+    ipfs_bin = get_ipfs_bin()
+    if not ipfs_bin:
         print("WARNING: IPFS executable not found. Please install IPFS Desktop or bundle ipfs.exe in bin/.")
         return None
 
@@ -249,26 +289,158 @@ def start_ipfs_daemon():
         print(f"Failed to start IPFS daemon: {e}")
         return None
 
-if __name__ == '__main__':
-    # Start IPFS daemon in background if not running
+ipfs_proc = None
+
+def init_app_async(window):
+    global ipfs_proc
+    
+    # 1. Start IPFS daemon in background
     print("Checking local IPFS state...")
     ipfs_proc = start_ipfs_daemon()
 
+    # 2. Start FastAPI Server
     print("Starting Sentinel AI Server...")
     server_thread = threading.Thread(target=start_server, daemon=True)
     server_thread.start()
 
-    wait_for_server()
+    # 3. Wait for the server thread to load AI models and boot
+    wait_for_server(server_thread)
 
+    # 4. Secure hotkeys
     print("Securing environment (blocking Windows keys)...")
     block_system_keys()
 
+    # 5. Redirect webview to the initialized local backend server
+    print("Loading application frontend...")
+    window.load_url('http://127.0.0.1:8000/')
+
+if __name__ == '__main__':
     WINDOW_TITLE = 'Sentinel AI Proctoring Platform'
 
-    print("Opening Native App Window...")
+    # Premium Loading Screen HTML
+    loading_html = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Sentinel OS Loading</title>
+        <style>
+            body {
+                background-color: #0c0f16;
+                color: #c9d1d9;
+                font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                align-items: center;
+                height: 100vh;
+                margin: 0;
+                overflow: hidden;
+            }
+            .container {
+                text-align: center;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                animation: fadeIn 1s ease-out;
+            }
+            .logo-container {
+                display: flex;
+                align-items: center;
+                margin-bottom: 25px;
+            }
+            .shield-icon {
+                width: 48px;
+                height: 48px;
+                fill: #38bdf8;
+                margin-right: 12px;
+                filter: drop-shadow(0 0 8px rgba(56, 189, 248, 0.4));
+            }
+            .logo-text {
+                font-size: 36px;
+                font-weight: 800;
+                color: #ffffff;
+                letter-spacing: 2px;
+            }
+            .subtitle {
+                font-size: 14px;
+                color: #38bdf8;
+                text-transform: uppercase;
+                letter-spacing: 3px;
+                margin-bottom: 40px;
+                font-weight: 600;
+            }
+            .spinner-box {
+                position: relative;
+                width: 70px;
+                height: 70px;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                margin-bottom: 30px;
+            }
+            .circle-outer {
+                width: 60px;
+                height: 60px;
+                border: 3px solid transparent;
+                border-top-color: #38bdf8;
+                border-bottom-color: #38bdf8;
+                border-radius: 50%;
+                animation: spin 1.5s linear infinite;
+            }
+            .circle-inner {
+                position: absolute;
+                width: 40px;
+                height: 40px;
+                border: 3px solid transparent;
+                border-left-color: #ffffff;
+                border-right-color: #ffffff;
+                border-radius: 50%;
+                animation: spin-reverse 1s linear infinite;
+            }
+            .status-text {
+                font-size: 16px;
+                color: #94a3b8;
+                font-weight: 500;
+                letter-spacing: 0.5px;
+                min-height: 24px;
+            }
+            @keyframes spin {
+                0% { transform: rotate(0deg); }
+                100% { transform: rotate(360deg); }
+            }
+            @keyframes spin-reverse {
+                0% { transform: rotate(360deg); }
+                100% { transform: rotate(0deg); }
+            }
+            @keyframes fadeIn {
+                from { opacity: 0; transform: translateY(10px); }
+                to { opacity: 1; transform: translateY(0); }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="logo-container">
+                <svg class="shield-icon" viewBox="0 0 24 24">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                </svg>
+                <div class="logo-text">Sentinel OS</div>
+            </div>
+            <div class="subtitle">Secure Examination Environment</div>
+            <div class="spinner-box">
+                <div class="circle-outer"></div>
+                <div class="circle-inner"></div>
+            </div>
+            <div class="status-text">Initializing AI Proctoring Models...</div>
+        </div>
+    </body>
+    </html>
+    """
+
+    print("Opening Native App Window (Loading Screen)...")
     window = webview.create_window(
         WINDOW_TITLE,
-        'http://127.0.0.1:8000/',
+        html=loading_html,
         fullscreen=True,
         frameless=True,
         on_top=True,
@@ -283,10 +455,22 @@ if __name__ == '__main__':
     )
     lock_thread.start()
 
-    webview.start()
+    # Launch model loading and server initialization asynchronously
+    webview.start(init_app_async, window)
 
     # Clean up background IPFS process on exit
     if ipfs_proc:
+        # Run Garbage Collection to delete all unpinned image blocks from disk cache
+        ipfs_bin = get_ipfs_bin()
+        if ipfs_bin:
+            try:
+                print("Running local IPFS Garbage Collection to free up disk space...")
+                # Run with CREATE_NO_WINDOW (0x08000000) to keep it silent
+                subprocess.run([ipfs_bin, "repo", "gc"], capture_output=True, creationflags=0x08000000)
+                print("IPFS storage cleaned successfully.")
+            except Exception as gc_err:
+                print(f"Failed to run IPFS GC: {gc_err}")
+
         print("Stopping background IPFS daemon...")
         ipfs_proc.terminate()
         try:
