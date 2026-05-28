@@ -64,6 +64,11 @@ export default function ControlRoom() {
 
     fetchInitialSessions();
 
+    // Set up polling interval as a robust fallback for realtime updates
+    const pollInterval = setInterval(() => {
+      fetchInitialSessions();
+    }, 3000);
+
     const channel = supabase
       .channel('sessions-realtime')
       .on(
@@ -76,13 +81,14 @@ export default function ControlRoom() {
       .subscribe();
 
     return () => {
+      clearInterval(pollInterval);
       supabase.removeChannel(channel);
     };
   }, []);
 
   const unpinCids = async (cids: string[]) => {
-    for (const cid of cids) {
-      if (!cid) continue;
+    const promises = cids.map(async (cid) => {
+      if (!cid) return;
       const cleanCid = getCleanCid(cid);
       try {
         await fetch(`http://127.0.0.1:8000/api/v1/ipfs/unpin/${cleanCid}`, {
@@ -92,7 +98,8 @@ export default function ControlRoom() {
       } catch (e) {
         console.warn(`Failed to unpin CID ${cleanCid}:`, e);
       }
-    }
+    });
+    await Promise.all(promises);
   };
 
   const forceTerminateSession = async (studentId: string) => {
@@ -120,7 +127,7 @@ export default function ControlRoom() {
       const cids = session.violations?.map(v => v.cid).filter((cid): cid is string => !!cid) || [];
 
       if (cids.length > 0) {
-        await unpinCids(cids);
+        unpinCids(cids); // Run in background without blocking DB delete
       }
 
       const { error } = await supabase
@@ -156,7 +163,7 @@ export default function ControlRoom() {
       });
 
       if (allCids.length > 0) {
-        await unpinCids(allCids);
+        unpinCids(allCids); // Run in background without blocking DB delete
       }
 
       const { error } = await supabase
@@ -296,10 +303,12 @@ export default function ControlRoom() {
                             <div className="ipfs-evidence">
                               <span>IPFS Evidence Captured</span>
                               <img 
-                                src={`http://127.0.0.1:8080/ipfs/${getCleanCid(v.cid)}`} 
+                                src={`https://cloudflare-ipfs.com/ipfs/${getCleanCid(v.cid)}`} 
                                 onError={(e) => {
                                   const target = e.target as HTMLImageElement;
-                                  if (target.src.startsWith('http://127.0.0.1:8080')) {
+                                  if (target.src.startsWith('https://cloudflare-ipfs.com')) {
+                                    target.src = `https://gateway.pinata.cloud/ipfs/${getCleanCid(v.cid)}`;
+                                  } else if (target.src.startsWith('https://gateway.pinata.cloud')) {
                                     target.src = `https://ipfs.io/ipfs/${getCleanCid(v.cid)}`;
                                   }
                                 }}
