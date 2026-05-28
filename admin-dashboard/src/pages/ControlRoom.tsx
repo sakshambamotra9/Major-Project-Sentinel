@@ -282,15 +282,6 @@ export default function ControlRoom() {
                                 <span style={{ fontSize: '11px', color: 'var(--text-muted)', wordBreak: 'break-all' }}>CID: <code>{getCleanCid(v.cid)}</code></span>
                                 <div style={{ display: 'flex', gap: '10px' }}>
                                   <a 
-                                    href={`http://127.0.0.1:8080/ipfs/${getCleanCid(v.cid)}`} 
-                                    target="_blank" 
-                                    rel="noopener noreferrer"
-                                    className="cid-link"
-                                    style={{ fontSize: '12px' }}
-                                  >
-                                    🔗 Local Gateway
-                                  </a>
-                                  <a 
                                     href={`https://ipfs.io/ipfs/${getCleanCid(v.cid)}`} 
                                     target="_blank" 
                                     rel="noopener noreferrer"
